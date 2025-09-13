@@ -1,5 +1,5 @@
 // content.js - Script injecté dans chaque page web
-console.log(' Manga Translator extension loaded');
+console.log('🚀 Manga Translator extension loaded');
 
 // Configuration
 const API_BASE_URL = 'http://localhost:8000';
@@ -130,7 +130,7 @@ function scanForImages() {
   if (!isTranslationActive) return;
   
   const images = document.querySelectorAll('img');
-  console.log(` Found ${images.length} images on page`);
+  console.log(`📸 Found ${images.length} images on page`);
   
   images.forEach((img, index) => {
     if (!processedImages.has(img) && shouldTranslateImage(img)) {
@@ -187,21 +187,35 @@ async function processImage(img) {
     const result = await response.json();
     
     if (result.success) {
-      // Remplacer l'image par la version traduite
-      img.src = `data:image/png;base64,${result.translated_image_base64}`;
-      updateOverlay(overlay, 'Translated!', 'manga-translator-translated');
+      // Créer une nouvelle image au lieu de remplacer directement
+      const newImg = new Image();
+      newImg.onload = () => {
+        // Remplacer l'ancienne image
+        img.src = newImg.src;
+        updateOverlay(overlay, 'Translated!', 'manga-translator-translated');
+        
+        // Supprimer l'overlay après 2 secondes
+        setTimeout(() => overlay.remove(), 2000);
+        
+        console.log(`✅ Image translated in ${result.processing_time.toFixed(2)}s`);
+      };
       
-      // Supprimer l'overlay après 2 secondes
-      setTimeout(() => overlay.remove(), 2000);
+      newImg.onerror = () => {
+        console.error('Failed to load translated image');
+        updateOverlay(overlay, 'Load error', 'manga-translator-overlay');
+        setTimeout(() => overlay.remove(), 3000);
+      };
       
-      console.log(` Image translated in ${result.processing_time.toFixed(2)}s`);
+      // Charger l'image traduite
+      newImg.src = `data:image/png;base64,${result.translated_image_base64}`;
+      
     } else {
       updateOverlay(overlay, 'Error: ' + result.error, 'manga-translator-overlay');
       setTimeout(() => overlay.remove(), 3000);
     }
     
   } catch (error) {
-    console.error(' Translation failed:', error);
+    console.error('❌ Translation failed:', error);
     const overlay = document.querySelector(`[data-img-id="${img.dataset.imgId}"]`);
     if (overlay) {
       updateOverlay(overlay, 'Failed', 'manga-translator-overlay');
