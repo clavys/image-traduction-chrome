@@ -34,6 +34,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('Message reçu:', message);
   
   switch (message.action) {
+    case 'fetchImage':
+      // Télécharger une image en contournant CORS
+      fetchImageViaBackground(message.url)
+        .then(base64 => {
+          sendResponse({success: true, base64: base64});
+        })
+        .catch(error => {
+          console.error('Failed to fetch image:', error);
+          sendResponse({success: false, error: error.message});
+        });
+      return true; // Réponse asynchrone
+      
     case 'updateStats':
       updateStats(message.data);
       break;
@@ -58,6 +70,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.log('Action inconnue:', message.action);
   }
 });
+
+// Télécharger une image via le background script (contourne CORS)
+async function fetchImageViaBackground(imageUrl) {
+  try {
+    const response = await fetch(imageUrl);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const blob = await response.blob();
+    
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result.split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = () => reject(new Error('FileReader failed'));
+      reader.readAsDataURL(blob);
+    });
+    
+  } catch (error) {
+    console.error('Background image fetch failed:', error);
+    throw error;
+  }
+}
 
 // Mettre à jour les statistiques
 function updateStats(newData) {
