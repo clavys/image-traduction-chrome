@@ -472,12 +472,18 @@ def process_simulation_mode(image, request):
     
     return result_image
 
-def get_font():
-    """Police pour le rendu"""
+def get_font(size=14):
+    """Police pour le rendu avec taille personnalisable"""
     try:
-        return ImageFont.truetype("arial.ttf", 14)
+        return ImageFont.truetype("arial.ttf", size)
     except:
         try:
+            # Essayer d'autres polices système
+            for font_name in ["calibri.ttf", "tahoma.ttf", "verdana.ttf"]:
+                try:
+                    return ImageFont.truetype(font_name, size)
+                except:
+                    continue
             return ImageFont.load_default()
         except:
             return None
