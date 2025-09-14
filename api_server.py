@@ -318,9 +318,15 @@ async def process_with_ballons_translator(image, request):
                         # Méthode 2: OCR sur la région du TextBlock avec ocr_img
                         if not text:
                             try:
-                                # Utiliser xywh pour extraire la région
+                                # Utiliser xywh() comme méthode, pas propriété
                                 if hasattr(textblock, 'xywh'):
-                                    x, y, w, h = map(int, textblock.xywh)
+                                    try:
+                                        xywh_result = textblock.xywh()  # Appeler la méthode
+                                        x, y, w, h = map(int, xywh_result)
+                                    except:
+                                        # Si c'est une propriété, pas une méthode
+                                        x, y, w, h = map(int, textblock.xywh)
+                                    
                                     if w > 0 and h > 0:
                                         print(f"    Extraction région XYWH: [{x},{y},{w},{h}]")
                                         x1, y1, x2, y2 = x, y, x + w, y + h
@@ -339,7 +345,13 @@ async def process_with_ballons_translator(image, request):
                                             print(f"    OCR résultat: '{text}'")
                                             
                                 elif hasattr(textblock, 'xyxy'):
-                                    x1, y1, x2, y2 = map(int, textblock.xyxy)
+                                    try:
+                                        xyxy_result = textblock.xyxy()  # Appeler la méthode
+                                        x1, y1, x2, y2 = map(int, xyxy_result)
+                                    except:
+                                        # Si c'est une propriété, pas une méthode
+                                        x1, y1, x2, y2 = map(int, textblock.xyxy)
+                                    
                                     # S'assurer que les coordonnées sont dans les limites
                                     x1 = max(0, x1)
                                     y1 = max(0, y1)
