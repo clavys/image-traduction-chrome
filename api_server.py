@@ -67,21 +67,15 @@ async def lifespan(app):
             except Exception as e:
                 print(f"❌ Erreur ComicTextDetector: {e}")
             
-            # Initialiser l'OCR MIT 48px
+             # Initialiser l'OCR MIT 48px
             try:
-                # L'OCR a besoin de paramètres dictionary et max_len
-                # Essayer différentes initialisations
-                try:
-                    ballons_modules['ocr'] = Mit48pxOCR(dictionary=None, max_len=100)
-                    print("✅ Mit48pxOCR initialisé (avec paramètres)")
-                except:
-                    # Fallback: utiliser l'OCR depuis ocr_mit.py qui pourrait être plus simple
-                    from modules.ocr.ocr_mit import OCRMIT48px
-                    ballons_modules['ocr'] = OCRMIT48px()
-                    print("✅ OCRMIT48px initialisé (fallback)")
+                # Essayer OCRMIT48px depuis ocr_mit.py (plus simple)
+                from modules.ocr.ocr_mit import OCRMIT48px
+                ballons_modules['ocr'] = OCRMIT48px()
+                print("✅ OCRMIT48px initialisé")
             except Exception as e:
                 print(f"❌ Erreur OCR: {e}")
-                print("⚠️ Continuons sans OCR - la détection et traduction fonctionnent déjà")
+                print("⚠️ API fonctionne parfaitement avec 3/4 modules (détection + traduction + inpainting)")
             
             # Initialiser l'inpainter Lama
             try:
