@@ -348,7 +348,7 @@ async def translate_image_ballons_style(image, request):
         return add_debug_info(image, f"Erreur workflow: {str(e)}")
 
 def render_ballons_result(original_image, img_array, blk_list, mask):
-    """Rendu final avec inpainting comme BallonsTranslator"""
+    """Rendu final avec inpainting utilisant les propriétés BallonsTranslator"""
     try:
         inpainter = ballons_modules['inpainter']
         
@@ -371,28 +371,133 @@ def render_ballons_result(original_image, img_array, blk_list, mask):
             print(f"⚠️ Inpainting échoué: {e}")
             result_image = original_image.copy()
         
-        # Ajouter le texte traduit aux positions originales
+        # Rendu du texte utilisant les propriétés BallonsTranslator
         draw = ImageDraw.Draw(result_image)
-        font = get_font()
         
         for blk in blk_list:
             if blk.translation and hasattr(blk, 'xyxy'):
                 x1, y1, x2, y2 = map(int, blk.xyxy)
+                zone_width = x2 - x1
+                zone_height = y2 - y1
                 
-                # Centrer le texte dans la zone
-                text_width = draw.textlength(blk.translation, font=font)
-                text_x = x1 + (x2 - x1 - text_width) // 2
-                text_y = y1 + (y2 - y1) // 2
+                # Utiliser la taille de police détectée par BallonsTranslator
+                detected_font_size = getattr(blk, 'font_size', 16)
+                if hasattr(blk, 'fontformat') and blk.fontformat.font_size > 0:
+                    detected_font_size = int(blk.fontformat.font_size)
+                elif hasattr(blk, '_detected_font_size') and blk._detected_font_size > 0:
+                    detected_font_size = int(blk._detected_font_size)
                 
-                # Fond blanc pour lisibilité
-                text_bbox = draw.textbbox((text_x, text_y), blk.translation, font=font)
-                draw.rectangle(text_bbox, fill=(255, 255, 255, 220))
+                # Adapter la taille à la zone disponible
+                font_size = min(detected_font_size, zone_height // 2, zone_width // 8)
+                font_size = max(font_size, 8)  # Minimum 8px
                 
-                # Texte traduit
-                draw.text((text_x, text_y), blk.translation, fill="black", font=font)
+                # Utiliser les propriétés de formatage de BallonsTranslator
+                vertical = getattr(blk, 'vertical', False)
+                alignment = getattr(blk, 'alignment', 1)  # 1 = center par défaut
+                
+                try:
+                    font = ImageFont.truetype("arial.ttf", font_size)
+                except:
+                    font = ImageFont.load_default()
+                
+                # Gérer l'orientation et la découpe du texte
+                translation = blk.translation
+                if vertical:
+                    # Pour le texte vertical, limiter par la hauteur
+                    max_chars_per_line = max(1, zone_height // font_size)
+                    lines = [translation[i:i+max_chars_per_line] for i in range(0, len(translation), max_chars_per_line)]
+                else:
+                    # Pour le texte horizontal, découper par mots
+                    words = translation.split()
+                    lines = []
+                    current_line = ""
+                    
+                    for word in words:
+                        test_line = current_line + (" " if current_line else "") + word
+                        text_width = draw.textlength(test_line, font=font)
+                        
+                        if text_width <= zone_width - 10:
+                            current_line = test_line
+                        else:
+                            if current_line:
+                                lines.append(current_line)
+                                current_line = word
+                            else:
+                                lines.append(word[:zone_width // (font_size // 2)])
+                    
+                    if current_line:
+                        lines.append(current_line)
+                
+                # Limiter le nombre de lignes selon la zone
+                max_lines = max(1, zone_height // (font_size + 4))
+                if len(lines) > max_lines:
+                    lines = lines[:max_lines-1] + [lines[max_lines-1][:8] + "..."]
+                
+                # Calculer le positionnement selon l'alignement BallonsTranslator
+                total_text_height = len(lines) * (font_size + 4)
+                
+                if vertical:
+                    # Texte vertical (manga japonais)
+                    start_x = x1 + zone_width - font_size - 5
+                    start_y = y1 + (zone_height - total_text_height) // 2
+                else:
+                    # Texte horizontal
+                    start_y = y1 + (zone_height - total_text_height) // 2
+                
+                # Dessiner le texte ligne par ligne
+                for i, line in enumerate(lines):
+                    if vertical:
+                        text_x = start_x
+                        text_y = start_y + i * (font_size + 4)
+                    else:
+                        # Alignement horizontal selon BallonsTranslator
+                        text_width = draw.textlength(line, font=font)
+                        if alignment == 0:  # Left
+                            text_x = x1 + 5
+                        elif alignment == 2:  # Right
+                            text_x = x2 - text_width - 5
+                        else:  # Center (défaut)
+                            text_x = x1 + (zone_width - text_width) // 2
+                        
+                        text_y = start_y + i * (font_size + 4)
+                    
+                    # Vérifier les limites de l'image
+                    text_x = max(2, min(text_x, result_image.width - 2))
+                    text_y = max(2, min(text_y, result_image.height - font_size - 2))
+                    
+                    if text_y + font_size > result_image.height:
+                        break
+                    
+                    # Fond blanc avec opacité pour lisibilité
+                    text_bbox = draw.textbbox((text_x, text_y), line, font=font)
+                    padding = 2
+                    bg_bbox = [
+                        text_bbox[0] - padding,
+                        text_bbox[1] - padding,
+                        text_bbox[2] + padding,
+                        text_bbox[3] + padding
+                    ]
+                    
+                    # Créer un fond blanc semi-transparent
+                    overlay = Image.new('RGBA', result_image.size, (255, 255, 255, 0))
+                    overlay_draw = ImageDraw.Draw(overlay)
+                    overlay_draw.rectangle(bg_bbox, fill=(255, 255, 255, 200))
+                    
+                    # Composer avec l'image principale
+                    result_image = Image.alpha_composite(
+                        result_image.convert('RGBA'), 
+                        overlay
+                    ).convert('RGB')
+                    
+                    # Redessiner sur l'image composée
+                    draw = ImageDraw.Draw(result_image)
+                    
+                    # Texte noir
+                    draw.text((text_x, text_y), line, fill="black", font=font)
         
-        # Marquer comme traitement BallonsTranslator complet
-        draw.text((10, original_image.height - 25), "🎯 BALLONS TRANSLATOR - WORKFLOW NATIF", fill="green", font=font)
+        # Signature discrète
+        small_font = get_font(size=8)
+        draw.text((5, result_image.height - 12), "BallonsTranslator", fill=(100, 100, 100), font=small_font)
         
         return result_image
         
