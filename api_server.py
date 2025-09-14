@@ -306,7 +306,6 @@ async def process_with_ballons_translator(image, request):
                 for i, textblock in enumerate(text_regions):
                     print(f"🔍 Traitement TextBlock {i+1}: {type(textblock)}")
                     
-                    # Les TextBlock ont une méthode get_text() selon l'analyse
                     text = None
                     try:
                         # Méthode 1: utiliser get_text() directement (TextBlock peut déjà avoir du texte)
@@ -316,62 +315,49 @@ async def process_with_ballons_translator(image, request):
                                 text = existing_text.strip()
                                 print(f"📝 Texte existant dans TextBlock: '{text}'")
                         
-                        # Méthode 2: OCR sur la région du TextBlock avec les bonnes méthodes
+                        # Méthode 2: OCR sur la région du TextBlock avec ocr_img
                         if not text:
-                            # Essayer ocr_img directement sur la région extraite
                             try:
-                                if hasattr(textblock, 'xyxy'):
+                                # Utiliser xywh pour extraire la région
+                                if hasattr(textblock, 'xywh'):
+                                    x, y, w, h = map(int, textblock.xywh)
+                                    if w > 0 and h > 0:
+                                        print(f"    Extraction région XYWH: [{x},{y},{w},{h}]")
+                                        x1, y1, x2, y2 = x, y, x + w, y + h
+                                        # S'assurer que les coordonnées sont dans les limites
+                                        x1 = max(0, x1)
+                                        y1 = max(0, y1) 
+                                        x2 = min(img_array.shape[1], x2)
+                                        y2 = min(img_array.shape[0], y2)
+                                        
+                                        if x2 > x1 and y2 > y1:
+                                            region_crop = img_array[y1:y2, x1:x2]
+                                            print(f"    Région extraite: {region_crop.shape}")
+                                            
+                                            # Utiliser ocr_img sur la région
+                                            text = ocr.ocr_img(region_crop)
+                                            print(f"    OCR résultat: '{text}'")
+                                            
+                                elif hasattr(textblock, 'xyxy'):
                                     x1, y1, x2, y2 = map(int, textblock.xyxy)
-                                    if y2 > y1 and x2 > x1:
-                                        print(f"    Extraction région: [{x1},{y1},{x2},{y2}]")
+                                    # S'assurer que les coordonnées sont dans les limites
+                                    x1 = max(0, x1)
+                                    y1 = max(0, y1)
+                                    x2 = min(img_array.shape[1], x2)
+                                    y2 = min(img_array.shape[0], y2)
+                                    
+                                    if x2 > x1 and y2 > y1:
+                                        print(f"    Extraction région XYXY: [{x1},{y1},{x2},{y2}]")
                                         region_crop = img_array[y1:y2, x1:x2]
                                         print(f"    Région extraite: {region_crop.shape}")
                                         
-                                        if hasattr(ocr, 'ocr_img'):
-                                            print(f"    Essai ocr_img...")
-                                            ocr_result = ocr.ocr_img(region_crop)
-                                            print(f"    ocr_img résultat: {type(ocr_result)}")
-                                            if ocr_result:
-                                                print(f"    Contenu: {ocr_result}")
-                                                if isinstance(ocr_result, str):
-                                                    text = ocr_result
-                                                elif isinstance(ocr_result, list) and len(ocr_result) > 0:
-                                                    text = str(ocr_result[0])
-                                                else:
-                                                    text = str(ocr_result)
+                                        # Utiliser ocr_img sur la région
+                                        text = ocr.ocr_img(region_crop)
+                                        print(f"    OCR résultat: '{text}'")
                                         
-                                elif hasattr(textblock, 'bbox'):
-                                    x, y, w, h = map(int, textblock.bbox)
-                                    if w > 0 and h > 0:
-                                        print(f"    Extraction bbox: [{x},{y},{w},{h}]")
-                                        region_crop = img_array[y:y+h, x:x+w]
-                                        print(f"    Région extraite: {region_crop.shape}")
-                                        
-                                        if hasattr(ocr, 'ocr_img'):
-                                            print(f"    Essai ocr_img...")
-                                            ocr_result = ocr.ocr_img(region_crop)
-                                            print(f"    ocr_img résultat: {type(ocr_result)}")
-                                            if ocr_result:
-                                                print(f"    Contenu: {ocr_result}")
-                                                if isinstance(ocr_result, str):
-                                                    text = ocr_result
-                                                elif isinstance(ocr_result, list) and len(ocr_result) > 0:
-                                                    text = str(ocr_result[0])
-                                                else:
-                                                    text = str(ocr_result)
-                                
                             except Exception as e:
-                                print(f"    Extraction région échouée: {e}")
-                                # Essayer run_ocr avec l'image complète
-                                try:
-                                    print(f"    Essai run_ocr sur image complète...")
-                                    ocr_result = ocr.run_ocr(img_array)
-                                    print(f"    run_ocr résultat complet: {type(ocr_result)}")
-                                    if ocr_result:
-                                        print(f"    Contenu: {ocr_result}")
-                                except Exception as e2:
-                                    print(f"    run_ocr complet échoué: {e2}")
-                            
+                                print(f"    OCR sur région échoué: {e}")
+                        
                     except Exception as e:
                         print(f"⚠️ OCR échoué pour TextBlock {i+1}: {e}")
                     
