@@ -1,22 +1,4 @@
-# 3. Traduction sécurisée
-        translator = ballons_modules['translator']
-        translated_count = 0
-        
-        for blk in blk_list:
-            # Vérifier que le bloc a du texte
-            text = None
-            try:
-                if hasattr(blk, 'get_text'):
-                    text = blk.get_text()
-                elif hasattr(blk, 'text') and blk.text:
-                    if isinstance(blk.text, list):
-                        text = ' '.join(blk.text).strip()
-                    else:
-                        text = str(blk.text).strip()
-            except:
-                text = None
-            
-            if text anfrom fastapi import FastAPI, File, UploadFile, HTTPException
+
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import base64
