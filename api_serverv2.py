@@ -269,7 +269,7 @@ async def process_with_ballons_translator(image, request):
         # Conversion PIL -> numpy
         img_array = np.array(image)
         
-        # 1. Détection des zones de texte - CORRECTION BASÉE SUR L'ANALYSE
+        # 1. Détection des zones de texte
         if 'detector' not in ballons_modules:
             print("⚠️ Détecteur non disponible")
             return add_debug_info(image, "Détecteur manquant")
@@ -277,9 +277,7 @@ async def process_with_ballons_translator(image, request):
         detector = ballons_modules['detector']
         
         try:
-            # Utiliser l'API correcte du ComicTextDetector (comme dans BallonsTranslator)
-            # detector.detect() retourne (mask, blk_list) et prend 2 paramètres
-            empty_blk_list = []  # Liste vide comme second paramètre
+            empty_blk_list = []  # paramètre requis par ComicTextDetector
             mask, text_regions = detector.detect(img_array, empty_blk_list)
             print(f"📍 {len(text_regions)} zones de texte détectées")
             print(f"📍 Masque généré: {mask.shape if mask is not None else 'None'}")
@@ -290,229 +288,137 @@ async def process_with_ballons_translator(image, request):
         if not text_regions:
             return add_debug_info(image, "Aucune zone de texte détectée")
         
-        # 2. OCR sur les zones détectées - CORRECTION POUR TEXTBLOCK
+        # 2. OCR sur les zones détectées
+        print("📖 Reconnaissance de texte (OCR sur régions)...")
 
-def _extract_bbox(textblock, img_w=None, img_h=None):
-    """
-    Retourne (x, y, w, h) au format int si possible.
-    Supporte : textblock.bbox (x,y,w,h), textblock.xyxy (x1,y1,x2,y2),
-    tuples/lists (x,y,w,h) ou (x1,y1,x2,y2), dict {'bbox':...} etc.
-    """
-    try:
-        # Objet avec bbox (x,y,w,h)
-        if hasattr(textblock, 'bbox'):
-            bbox = textblock.bbox
-            if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
-                x, y, w, h = map(int, bbox[:4])
-                # Si bbox fournit x2,y2 au lieu de w,h, détecter cela
-                if w > 10000 or h > 10000 or w < 0 or h < 0:
-                    # improbable => peut être x2,y2
-                    x2, y2 = w, h
-                    w, h = x2 - x, y2 - y
-                return max(0, x), max(0, y), max(0, w), max(0, h)
+        extracted_texts = []
 
-        # Objet avec xyxy (x1,y1,x2,y2)
-        if hasattr(textblock, 'xyxy'):
-            xy = textblock.xyxy
-            if isinstance(xy, (list, tuple)) and len(xy) >= 4:
-                x1, y1, x2, y2 = map(int, xy[:4])
-                return max(0, x1), max(0, y1), max(0, x2 - x1), max(0, y2 - y1)
+        if 'ocr' in ballons_modules:
+            ocr = ballons_modules['ocr']
 
-        # Si c'est un dict contenant bbox ou xyxy
-        if isinstance(textblock, dict):
-            if 'bbox' in textblock:
-                bbox = textblock['bbox']
-                if len(bbox) >= 4:
-                    x, y, w, h = map(int, bbox[:4])
-                    return max(0, x), max(0, y), max(0, w), max(0, h)
-            if 'xyxy' in textblock:
-                xy = textblock['xyxy']
-                if len(xy) >= 4:
-                    x1, y1, x2, y2 = map(int, xy[:4])
-                    return max(0, x1), max(0, y1), max(0, x2 - x1), max(0, y2 - y1)
+            # Debug: méthodes disponibles
+            ocr_methods = [m for m in dir(ocr) if not m.startswith('_')]
+            print(f"🔧 Méthodes OCR disponibles: {ocr_methods}")
 
-        # Si textblock est une liste/tuple
-        if isinstance(textblock, (list, tuple)) and len(textblock) >= 4:
-            a, b, c, d = map(int, textblock[:4])
-            # heuristique : si a,b,c,d ressemblent à x1,y1,x2,y2
-            if c > a and d > b:
-                return max(0, a), max(0, b), max(0, c - a), max(0, d - b)
-            else:
-                return max(0, a), max(0, b), max(0, c), max(0, d)
-
-    except Exception:
-        pass
-
-    # fallback : whole image
-    if img_w is not None and img_h is not None:
-        return 0, 0, img_w, img_h
-    return 0, 0, 100, 30
-
-
-def _region_to_ocr_input(region_array):
-    """
-    Convertit un crop numpy (H,W,3) en format accepté par l'OCR.
-    Certains OCR acceptent numpy arrays; d'autres attendent PIL.Image.
-    On renvoie un tuple (candidate1, candidate2) pour essayer plusieurs formats.
-    """
-    try:
-        from PIL import Image
-        pil_img = Image.fromarray(region_array.astype('uint8'))
-    except Exception:
-        pil_img = None
-
-    return {
-        'pil': pil_img,
-        'numpy': region_array
-    }
-
-
-# --- Nouvelle boucle OCR à insérer dans process_with_ballons_translator ---
-print("📖 Reconnaissance de texte (OCR sur régions)...")
-
-extracted_texts = []
-
-if 'ocr' in ballons_modules:
-    ocr = ballons_modules['ocr']
-
-    # Debug: méthodes disponibles
-    ocr_methods = [m for m in dir(ocr) if not m.startswith('_')]
-    print(f"🔧 Méthodes OCR disponibles: {ocr_methods}")
-
-    for i, textblock in enumerate(text_regions):
-        try:
-            # 1) Récupérer bbox (x,y,w,h)
-            x, y, w, h = _extract_bbox(textblock, img_w=img_array.shape[1], img_h=img_array.shape[0])
-            if w <= 0 or h <= 0:
-                print(f"⚠️ TextBlock {i+1} bbox invalide: ({x},{y},{w},{h}), skip")
-                continue
-
-            # Clamp coordonnées à l'image
-            x1, y1 = max(0, int(x)), max(0, int(y))
-            x2, y2 = min(img_array.shape[1], int(x + w)), min(img_array.shape[0], int(y + h))
-            if x2 <= x1 or y2 <= y1:
-                print(f"⚠️ TextBlock {i+1} crop vide après clamp, skip")
-                continue
-
-            region = img_array[y1:y2, x1:x2]
-            if region.size == 0:
-                print(f"⚠️ TextBlock {i+1} region vide, skip")
-                continue
-
-            print(f"🔍 TextBlock {i+1}: crop {x1},{y1},{x2},{y2} -> shape {region.shape}")
-
-            # 2) Préparer input pour l'OCR (PIL + numpy)
-            inputs = _region_to_ocr_input(region)
-
-            text = None
-            ocr_output = None
-
-            # 3) Essayer ocr.ocr_img si disponible (préféré)
-            if hasattr(ocr, 'ocr_img'):
+            for i, textblock in enumerate(text_regions):
                 try:
-                    # Certains OCR acceptent numpy, d'autres PIL
-                    if inputs['numpy'] is not None:
-                        ocr_output = ocr.ocr_img(inputs['numpy'])
-                    if (not ocr_output) and inputs['pil'] is not None:
-                        ocr_output = ocr.ocr_img(inputs['pil'])
-                    print(f"    ocr.ocr_img résultat: {type(ocr_output)} -> {ocr_output}")
-                except Exception as e:
-                    print(f"    ❌ ocr.ocr_img a échoué: {e}")
+                    # 1) Récupérer bbox (x,y,w,h)
+                    x, y, w, h = _extract_bbox(textblock, img_w=img_array.shape[1], img_h=img_array.shape[0])
+                    if w <= 0 or h <= 0:
+                        print(f"⚠️ TextBlock {i+1} bbox invalide: ({x},{y},{w},{h}), skip")
+                        continue
 
-            # 4) Si pas de ocr_img ou résultat vide, essayer run_ocr (moins désirable mais fallback)
-            if not ocr_output and hasattr(ocr, 'run_ocr'):
-                try:
-                    # run_ocr peut vouloir l'image entière; essayer le crop si supporté
-                    try:
-                        ocr_output = ocr.run_ocr(region)
-                    except Exception:
-                        # essayer PIL
-                        if inputs['pil'] is not None:
-                            ocr_output = ocr.run_ocr(inputs['pil'])
-                    print(f"    run_ocr résultat: {type(ocr_output)} -> {ocr_output}")
-                except Exception as e:
-                    print(f"    ❌ run_ocr a échoué: {e}")
+                    # Clamp coordonnées à l'image
+                    x1, y1 = max(0, int(x)), max(0, int(y))
+                    x2, y2 = min(img_array.shape[1], int(x + w)), min(img_array.shape[0], int(y + h))
+                    if x2 <= x1 or y2 <= y1:
+                        print(f"⚠️ TextBlock {i+1} crop vide après clamp, skip")
+                        continue
 
-            # 5) Normaliser le résultat OCR en string
-            if ocr_output:
-                if isinstance(ocr_output, str):
-                    text = ocr_output.strip()
-                elif isinstance(ocr_output, list):
-                    # Règle pratique: prendre le premier élément non vide; si c'est une structure, extraire la chaîne
-                    for item in ocr_output:
-                        if not item:
-                            continue
-                        if isinstance(item, str):
-                            text = item.strip()
-                            break
-                        # si item est tuple/list comme (text, conf) ou dict
-                        if isinstance(item, (list, tuple)) and len(item) > 0 and isinstance(item[0], str):
-                            text = item[0].strip()
-                            break
-                        if isinstance(item, dict):
-                            # chercher clés communes
-                            for k in ('text', 'label', 'transcription'):
-                                if k in item and isinstance(item[k], str) and item[k].strip():
-                                    text = item[k].strip()
+                    region = img_array[y1:y2, x1:x2]
+                    if region.size == 0:
+                        print(f"⚠️ TextBlock {i+1} region vide, skip")
+                        continue
+
+                    print(f"🔍 TextBlock {i+1}: crop {x1},{y1},{x2},{y2} -> shape {region.shape}")
+
+                    # 2) Préparer input pour l'OCR (PIL + numpy)
+                    inputs = _region_to_ocr_input(region)
+
+                    text = None
+                    ocr_output = None
+
+                    # 3) Essayer ocr.ocr_img si disponible
+                    if hasattr(ocr, 'ocr_img'):
+                        try:
+                            if inputs['numpy'] is not None:
+                                ocr_output = ocr.ocr_img(inputs['numpy'])
+                            if (not ocr_output) and inputs['pil'] is not None:
+                                ocr_output = ocr.ocr_img(inputs['pil'])
+                            print(f"    ocr.ocr_img résultat: {type(ocr_output)} -> {ocr_output}")
+                        except Exception as e:
+                            print(f"    ❌ ocr.ocr_img a échoué: {e}")
+
+                    # 4) Fallback sur run_ocr
+                    if not ocr_output and hasattr(ocr, 'run_ocr'):
+                        try:
+                            try:
+                                ocr_output = ocr.run_ocr(region)
+                            except Exception:
+                                if inputs['pil'] is not None:
+                                    ocr_output = ocr.run_ocr(inputs['pil'])
+                            print(f"    run_ocr résultat: {type(ocr_output)} -> {ocr_output}")
+                        except Exception as e:
+                            print(f"    ❌ run_ocr a échoué: {e}")
+
+                    # 5) Normaliser le résultat OCR
+                    if ocr_output:
+                        if isinstance(ocr_output, str):
+                            text = ocr_output.strip()
+                        elif isinstance(ocr_output, list):
+                            for item in ocr_output:
+                                if not item:
+                                    continue
+                                if isinstance(item, str):
+                                    text = item.strip()
                                     break
-                        if text:
-                            break
-                    # si toujours rien, stringify le résultat
-                    if not text:
-                        text = str(ocr_output)
-                elif isinstance(ocr_output, dict):
-                    # chercher clé text/transcription
-                    for k in ('text', 'transcription', 'label'):
-                        if k in ocr_output and isinstance(ocr_output[k], str):
-                            text = ocr_output[k].strip()
-                            break
-                    if not text:
-                        text = str(ocr_output)
-                else:
-                    # fallback
-                    text = str(ocr_output).strip()
+                                if isinstance(item, (list, tuple)) and len(item) > 0 and isinstance(item[0], str):
+                                    text = item[0].strip()
+                                    break
+                                if isinstance(item, dict):
+                                    for k in ('text', 'label', 'transcription'):
+                                        if k in item and isinstance(item[k], str) and item[k].strip():
+                                            text = item[k].strip()
+                                            break
+                                if text:
+                                    break
+                            if not text:
+                                text = str(ocr_output)
+                        elif isinstance(ocr_output, dict):
+                            for k in ('text', 'transcription', 'label'):
+                                if k in ocr_output and isinstance(ocr_output[k], str):
+                                    text = ocr_output[k].strip()
+                                    break
+                            if not text:
+                                text = str(ocr_output)
+                        else:
+                            text = str(ocr_output).strip()
 
-            # 6) Si OCR retourne rien, tenter de lire une propriété textuelle déjà présente dans textblock
-            if not text and hasattr(textblock, 'get_text'):
-                try:
-                    t = textblock.get_text()
-                    if isinstance(t, str) and t.strip():
-                        text = t.strip()
-                        print(f"    get_text() trouvé: {text}")
-                except Exception:
-                    pass
+                    # 6) fallback: textblock.get_text()
+                    if not text and hasattr(textblock, 'get_text'):
+                        try:
+                            t = textblock.get_text()
+                            if isinstance(t, str) and t.strip():
+                                text = t.strip()
+                                print(f"    get_text() trouvé: {text}")
+                        except Exception:
+                            pass
 
-            if text and text.strip():
-                extracted_texts.append((textblock, text.strip()))
-                print(f"📝 TextBlock {i+1} reconnu: '{text.strip()}'")
-            else:
-                print(f"⚠️ TextBlock {i+1}: aucun texte reconnu")
-        except Exception as e:
-            print(f"⚠️ Erreur OCR pour TextBlock {i+1}: {e}")
+                    if text and text.strip():
+                        extracted_texts.append((textblock, text.strip()))
+                        print(f"📝 TextBlock {i+1} reconnu: '{text.strip()}'")
+                    else:
+                        print(f"⚠️ TextBlock {i+1}: aucun texte reconnu")
+                except Exception as e:
+                    print(f"⚠️ Erreur OCR pour TextBlock {i+1}: {e}")
 
-# Si pas de texte extrait, fallback test_text (inchangé)
-if not extracted_texts:
-    print("⚠️ Aucun texte OCR - création de texte de test pour vérifier le pipeline")
-    test_text = "こんにちは"
-    extracted_texts = [(None, test_text)]
-    print(f"📝 Texte de test ajouté: '{test_text}'")
+        if not extracted_texts:
+            print("⚠️ Aucun texte OCR - fallback test_text")
+            test_text = "こんにちは"
+            extracted_texts = [(None, test_text)]
+            print(f"📝 Texte de test ajouté: '{test_text}'")
 
-        
-        # 3. Traduction des textes
+        # 3. Traduction
         print("🌐 Traduction des textes...")
-        
         translated_texts = []
         
         if 'translator' in ballons_modules:
             translator = ballons_modules['translator']
-            
             try:
                 for textblock, text in extracted_texts:
-                    # Utiliser l'API du GoogleTranslator
                     try:
                         translated = translator.translate(text, target_language=request.target_lang)
                     except:
-                        # Essayer avec une signature différente
                         translated = translator.translate(text, request.source_lang, request.target_lang)
                     
                     translated_texts.append((textblock, text, translated))
@@ -522,14 +428,11 @@ if not extracted_texts:
                 for textblock, text in extracted_texts:
                     translated_texts.append((textblock, text, f"[ERREUR] {text}"))
         else:
-            # Pas de traducteur, garder texte original
             for textblock, text in extracted_texts:
                 translated_texts.append((textblock, text, f"[NO TRANSLATOR] {text}"))
-        
-        # 4. Rendu final
+
+        # 4. Rendu
         print("🎨 Composition de l'image finale...")
-        
-        # Essayer l'inpainting si disponible
         if 'inpainter' in ballons_modules and len(translated_texts) > 0:
             try:
                 print("🖌️ Inpainting avec LamaLarge...")
@@ -539,12 +442,40 @@ if not extracted_texts:
                 return render_ballons_data(image, translated_texts)
         else:
             return render_ballons_data(image, translated_texts)
+      
         
     except Exception as e:
         print(f"❌ Erreur critique BallonsTranslator: {e}")
         import traceback
         traceback.print_exc()
         return add_debug_info(image, f"Erreur: {str(e)}")
+
+
+def _extract_bbox(textblock, img_w=None, img_h=None):
+    """Extraire un bbox (x,y,w,h) depuis un textblock de ComicTextDetector"""
+    try:
+        if hasattr(textblock, "bbox"):
+            x, y, w, h = textblock.bbox
+            return x, y, w, h
+        if hasattr(textblock, "xyxy"):
+            x1, y1, x2, y2 = textblock.xyxy
+            return x1, y1, x2 - x1, y2 - y1
+    except Exception:
+        pass
+    # fallback
+    return 0, 0, img_w or 100, img_h or 30
+
+
+def _region_to_ocr_input(region_array):
+    """Préparer les inputs (PIL et numpy) pour l'OCR"""
+    pil_img = None
+    try:
+        pil_img = Image.fromarray(region_array.astype(np.uint8))
+    except Exception:
+        pass
+    return {"numpy": region_array, "pil": pil_img}
+
+
 
 def render_with_inpainting(original_image, img_array, translated_texts):
     """Rendu avec inpainting LamaLarge"""
