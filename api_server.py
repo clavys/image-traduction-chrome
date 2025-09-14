@@ -269,7 +269,7 @@ async def process_with_ballons_translator(image, request):
         # Conversion PIL -> numpy
         img_array = np.array(image)
         
-        # 1. Détection des zones de texte - CORRECTION BASÉE SUR L'ANALYSE
+        # 1. Détection des zones de texte - API CORRIGÉE selon analyse du code
         if 'detector' not in ballons_modules:
             print("⚠️ Détecteur non disponible")
             return add_debug_info(image, "Détecteur manquant")
@@ -277,7 +277,7 @@ async def process_with_ballons_translator(image, request):
         detector = ballons_modules['detector']
         
         try:
-            # Utiliser l'API correcte du ComicTextDetector (comme dans BallonsTranslator)
+            # Utiliser l'API correcte du ComicTextDetector basée sur l'analyse du code
             # detector.detect() retourne (mask, blk_list) et prend 2 paramètres
             empty_blk_list = []  # Liste vide comme second paramètre
             mask, text_regions = detector.detect(img_array, empty_blk_list)
@@ -290,7 +290,7 @@ async def process_with_ballons_translator(image, request):
         if not text_regions:
             return add_debug_info(image, "Aucune zone de texte détectée")
         
-        # 2. OCR sur les zones détectées - CORRECTION POUR TEXTBLOCK
+        # 2. OCR sur les zones détectées - API CORRIGÉE selon code source TextBlock
         print("📖 Reconnaissance de texte...")
         
         extracted_texts = []
@@ -315,57 +315,25 @@ async def process_with_ballons_translator(image, request):
                                 text = existing_text.strip()
                                 print(f"📝 Texte existant dans TextBlock: '{text}'")
                         
-                        # Méthode 2: OCR sur la région du TextBlock avec ocr_img
+                        # Méthode 2: OCR avec la vraie API BallonsTranslator basée sur le code source
                         if not text:
                             try:
-                                # Utiliser xywh() comme méthode, pas propriété
-                                if hasattr(textblock, 'xywh'):
-                                    try:
-                                        xywh_result = textblock.xywh()  # Appeler la méthode
-                                        x, y, w, h = map(int, xywh_result)
-                                    except:
-                                        # Si c'est une propriété, pas une méthode
-                                        x, y, w, h = map(int, textblock.xywh)
+                                # Utiliser xyxy directement (c'est une liste selon le code source, pas une méthode)
+                                x1, y1, x2, y2 = map(int, textblock.xyxy)
+                                # S'assurer que les coordonnées sont dans les limites
+                                x1 = max(0, x1)
+                                y1 = max(0, y1)
+                                x2 = min(img_array.shape[1], x2)
+                                y2 = min(img_array.shape[0], y2)
+                                
+                                if x2 > x1 and y2 > y1:
+                                    print(f"    Extraction région XYXY: [{x1},{y1},{x2},{y2}]")
+                                    region_crop = img_array[y1:y2, x1:x2]
+                                    print(f"    Région extraite: {region_crop.shape}")
                                     
-                                    if w > 0 and h > 0:
-                                        print(f"    Extraction région XYWH: [{x},{y},{w},{h}]")
-                                        x1, y1, x2, y2 = x, y, x + w, y + h
-                                        # S'assurer que les coordonnées sont dans les limites
-                                        x1 = max(0, x1)
-                                        y1 = max(0, y1) 
-                                        x2 = min(img_array.shape[1], x2)
-                                        y2 = min(img_array.shape[0], y2)
-                                        
-                                        if x2 > x1 and y2 > y1:
-                                            region_crop = img_array[y1:y2, x1:x2]
-                                            print(f"    Région extraite: {region_crop.shape}")
-                                            
-                                            # Utiliser ocr_img sur la région
-                                            text = ocr.ocr_img(region_crop)
-                                            print(f"    OCR résultat: '{text}'")
-                                            
-                                elif hasattr(textblock, 'xyxy'):
-                                    try:
-                                        xyxy_result = textblock.xyxy()  # Appeler la méthode
-                                        x1, y1, x2, y2 = map(int, xyxy_result)
-                                    except:
-                                        # Si c'est une propriété, pas une méthode
-                                        x1, y1, x2, y2 = map(int, textblock.xyxy)
-                                    
-                                    # S'assurer que les coordonnées sont dans les limites
-                                    x1 = max(0, x1)
-                                    y1 = max(0, y1)
-                                    x2 = min(img_array.shape[1], x2)
-                                    y2 = min(img_array.shape[0], y2)
-                                    
-                                    if x2 > x1 and y2 > y1:
-                                        print(f"    Extraction région XYXY: [{x1},{y1},{x2},{y2}]")
-                                        region_crop = img_array[y1:y2, x1:x2]
-                                        print(f"    Région extraite: {region_crop.shape}")
-                                        
-                                        # Utiliser ocr_img sur la région
-                                        text = ocr.ocr_img(region_crop)
-                                        print(f"    OCR résultat: '{text}'")
+                                    # Utiliser ocr_img sur la région (signature confirmée: numpy.ndarray -> str)
+                                    text = ocr.ocr_img(region_crop)
+                                    print(f"    OCR résultat: '{text}'")
                                         
                             except Exception as e:
                                 print(f"    OCR sur région échoué: {e}")
@@ -443,26 +411,19 @@ def render_with_inpainting(original_image, img_array, translated_texts):
     try:
         inpainter = ballons_modules['inpainter']
         
-        # Créer un masque simple pour test
+        # Créer un masque pour les zones de texte
         mask = np.zeros((img_array.shape[0], img_array.shape[1]), dtype=np.uint8)
         
         # Pour chaque zone de texte, créer une zone à inpainter
         for textblock, _, _ in translated_texts:
             if textblock is not None:
                 try:
-                    # Adapter selon le format des TextBlock
-                    if hasattr(textblock, 'bbox'):
-                        x, y, w, h = textblock.bbox
-                    elif hasattr(textblock, 'xyxy'):
-                        x1, y1, x2, y2 = textblock.xyxy
-                        x, y, w, h = x1, y1, x2-x1, y2-y1
-                    else:
-                        # Zone par défaut si format inconnu
-                        x, y, w, h = 10, 10, 100, 30
+                    # Utiliser xyxy du TextBlock (basé sur le code source analysé)
+                    x1, y1, x2, y2 = map(int, textblock.xyxy)
                     
                     # Remplir le masque
-                    y1, y2 = max(0, int(y)), min(mask.shape[0], int(y+h))
-                    x1, x2 = max(0, int(x)), min(mask.shape[1], int(x+w))
+                    y1, y2 = max(0, y1), min(mask.shape[0], y2)
+                    x1, x2 = max(0, x1), min(mask.shape[1], x2)
                     mask[y1:y2, x1:x2] = 255
                     
                 except Exception as e:
@@ -483,9 +444,7 @@ def render_with_inpainting(original_image, img_array, translated_texts):
         y_offset = 10
         for i, (textblock, original, translated) in enumerate(translated_texts[:5]):
             # Position intelligente si TextBlock disponible
-            if textblock and hasattr(textblock, 'bbox'):
-                x, y = textblock.bbox[:2]
-            elif textblock and hasattr(textblock, 'xyxy'):
+            if textblock and hasattr(textblock, 'xyxy'):
                 x, y = textblock.xyxy[:2]
             else:
                 x, y = 10, y_offset
