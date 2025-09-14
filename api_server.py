@@ -302,6 +302,11 @@ async def process_with_ballons_translator(image, request):
                 for i, textblock in enumerate(text_regions):
                     print(f"🔍 Traitement TextBlock {i+1}: {type(textblock)}")
                     
+                    # Debug: afficher les méthodes disponibles de l'OCR
+                    if i == 0:  # Seulement pour le premier TextBlock
+                        ocr_methods = [method for method in dir(ocr) if not method.startswith('_')]
+                        print(f"🔧 Méthodes OCR disponibles: {ocr_methods}")
+                    
                     # Les TextBlock ont une méthode get_text() selon l'analyse
                     text = None
                     try:
@@ -315,33 +320,31 @@ async def process_with_ballons_translator(image, request):
                         # Méthode 2: OCR sur la région du TextBlock avec les bonnes méthodes
                         if not text:
                             try:
-                                # Essayer recognize() d'abord
-                                text = ocr.recognize(img_array, textblock)
-                            except Exception as e1:
-                                print(f"    OCR recognize échoué: {e1}")
-                                try:
-                                    # Essayer sur une région croppée
+                                # Essayer les vraies méthodes disponibles
+                                if hasattr(ocr, 'run_ocr'):
+                                    text = ocr.run_ocr(img_array, textblock)
+                                elif hasattr(ocr, 'ocr_blk'):
+                                    text = ocr.ocr_blk(img_array, textblock)
+                                elif hasattr(ocr, 'detect_and_ocr'):
+                                    text = ocr.detect_and_ocr(img_array)
+                                else:
+                                    # Essayer sur une région croppée si aucune méthode spécifique
                                     if hasattr(textblock, 'xyxy'):
                                         x1, y1, x2, y2 = map(int, textblock.xyxy)
                                         region_crop = img_array[y1:y2, x1:x2]
-                                        # Utiliser une méthode OCR spécifique
                                         if hasattr(ocr, '__call__'):
-                                            text = ocr.__call__(region_crop)
-                                        elif hasattr(ocr, 'detect_and_ocr'):
-                                            text = ocr.detect_and_ocr(region_crop)
-                                        elif hasattr(ocr, 'ocr'):
-                                            text = ocr.ocr(region_crop)
+                                            text = ocr(region_crop)
+                                        elif hasattr(ocr, 'forward'):
+                                            text = ocr.forward(region_crop)
                                     elif hasattr(textblock, 'bbox'):
                                         x, y, w, h = map(int, textblock.bbox)
                                         region_crop = img_array[y:y+h, x:x+w]
                                         if hasattr(ocr, '__call__'):
-                                            text = ocr.__call__(region_crop)
-                                        elif hasattr(ocr, 'detect_and_ocr'):
-                                            text = ocr.detect_and_ocr(region_crop)
-                                        elif hasattr(ocr, 'ocr'):
-                                            text = ocr.ocr(region_crop)
-                                except Exception as e2:
-                                    print(f"    OCR sur région échoué: {e2}")
+                                            text = ocr(region_crop)
+                                        elif hasattr(ocr, 'forward'):
+                                            text = ocr.forward(region_crop)
+                            except Exception as e1:
+                                print(f"    OCR methods échoués: {e1}")
                             
                     except Exception as e:
                         print(f"⚠️ OCR échoué pour TextBlock {i+1}: {e}")
