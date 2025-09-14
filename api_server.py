@@ -347,89 +347,115 @@ async def translate_image_ballons_style(image, request):
         traceback.print_exc()
         return add_debug_info(image, f"Erreur workflow: {str(e)}")
 
-def render_ballons_result(original_image, img_array, blk_list, mask):
-    """Rendu final avec inpainting comme BallonsTranslator"""
+def get_font(size=18):
+    """Police pour le rendu avec meilleure lisibilité"""
     try:
-        inpainter = ballons_modules['inpainter']
-        
-        # Créer le masque pour l'inpainting
+        # Essayer DejaVuSans-Bold, souvent présente avec Pillow
+        return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
+    except:
+        try:
+            return ImageFont.load_default()
+        except:
+            return None
+
+
+def draw_text_with_outline(draw, position, text, font, fill="white", outline="black", stroke_width=2):
+    """Dessine du texte avec contour"""
+    draw.text(position, text, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=outline)
+
+
+def render_ballons_result(original_image, img_array, blk_list, mask):
+    """Rendu final avec texte blanc contour noir"""
+    try:
+        inpainter = ballons_modules.get('inpainter')
         inpaint_mask = np.zeros((img_array.shape[0], img_array.shape[1]), dtype=np.uint8)
-        
-        # Utiliser les zones détectées pour créer le masque
         for blk in blk_list:
             if blk.translation and hasattr(blk, 'xyxy'):
                 x1, y1, x2, y2 = map(int, blk.xyxy)
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(inpaint_mask.shape[1], x2), min(inpaint_mask.shape[0], y2)
                 inpaint_mask[y1:y2, x1:x2] = 255
-        
-        # Appliquer l'inpainting
+
         try:
             inpainted_array = inpainter.inpaint(img_array, inpaint_mask)
             result_image = Image.fromarray(inpainted_array.astype(np.uint8))
         except Exception as e:
             print(f"⚠️ Inpainting échoué: {e}")
             result_image = original_image.copy()
-        
-        # Ajouter le texte traduit aux positions originales
+
         draw = ImageDraw.Draw(result_image)
-        font = get_font()
-        
+        font = get_font(18)
+        ascent, descent = font.getmetrics()
+        line_spacing = ascent + descent + 2
+
         for blk in blk_list:
             if blk.translation and hasattr(blk, 'xyxy'):
                 x1, y1, x2, y2 = map(int, blk.xyxy)
-                
-                # Centrer le texte dans la zone
-                text_width = draw.textlength(blk.translation, font=font)
-                text_x = x1 + (x2 - x1 - text_width) // 2
-                text_y = y1 + (y2 - y1) // 2
-                
-                # Fond blanc pour lisibilité
-                text_bbox = draw.textbbox((text_x, text_y), blk.translation, font=font)
-                draw.rectangle(text_bbox, fill=(255, 255, 255, 220))
-                
-                # Texte traduit
-                draw.text((text_x, text_y), blk.translation, fill="black", font=font)
-        
-        # Marquer comme traitement BallonsTranslator complet
-        draw.text((10, original_image.height - 25), "🎯 BALLONS TRANSLATOR - WORKFLOW NATIF", fill="green", font=font)
-        
+                max_width = x2 - x1
+                max_height = y2 - y1
+                lines = wrap_text(blk.translation, font, max_width, draw)
+                total_height = len(lines) * line_spacing
+                y_text = y1 + (max_height - total_height) // 2
+
+                for line in lines:
+                    w = draw.textlength(line, font=font)
+                    x_text = x1 + (max_width - w) // 2
+                    draw_text_with_outline(draw, (x_text, y_text), line, font)
+                    y_text += line_spacing
+
+        draw_text_with_outline(draw, (10, original_image.height - 25),
+                               "🎯 BALLONS TRANSLATOR - WORKFLOW NATIF", font, fill="green", outline="black", stroke_width=2)
         return result_image
-        
+
     except Exception as e:
         print(f"❌ Erreur rendu final: {e}")
         return render_ballons_overlay(original_image, blk_list)
 
+
 def render_ballons_overlay(image, blk_list):
-    """Rendu simple avec overlay des traductions"""
+    """Rendu simple avec texte blanc contour noir"""
     result_image = image.copy()
     draw = ImageDraw.Draw(result_image)
-    font = get_font()
-    
-    # Titre
-    draw.text((10, 10), "🎯 BALLONS TRANSLATOR - DONNÉES RÉELLES", fill="green", font=font)
-    
+    font = get_font(16)
+    ascent, descent = font.getmetrics()
+    line_height = ascent + descent + 2
+
+    draw_text_with_outline(draw, (10, 10), "🎯 BALLONS TRANSLATOR - DONNÉES RÉELLES", font, fill="green", outline="black")
+
     y_offset = 35
     for i, blk in enumerate(blk_list[:6]):
         original_text = blk.get_text()
         translated_text = getattr(blk, 'translation', '[pas de traduction]')
-        
         if original_text:
             text = f"{i+1}. '{original_text}' -> '{translated_text}'"
-            
-            # Fond semi-transparent
-            text_bbox = draw.textbbox((10, y_offset), text, font=font)
-            draw.rectangle([(text_bbox[0]-2, text_bbox[1]-2), (text_bbox[2]+2, text_bbox[3]+2)], 
-                          fill=(0, 0, 0, 180))
-            
-            # Texte
-            draw.text((10, y_offset), text, fill="white", font=font)
-            y_offset += 22
-    
+            draw_text_with_outline(draw, (10, y_offset), text, font)
+            y_offset += line_height
+
     if len(blk_list) > 6:
-        draw.text((10, y_offset + 5), f"... et {len(blk_list)-6} autres zones", fill="gray", font=font)
-    
+        draw_text_with_outline(draw, (10, y_offset + 5), f"... et {len(blk_list)-6} autres zones", font, fill="gray")
+
     return result_image
+
+
+def wrap_text(text, font, max_width, draw):
+    """Découper le texte en plusieurs lignes pour tenir dans max_width"""
+    words = text.split(' ')
+    lines = []
+    current_line = ''
+    for word in words:
+        test_line = f"{current_line} {word}".strip()
+        w = draw.textlength(test_line, font=font)
+        if w <= max_width:
+            current_line = test_line
+        else:
+            if current_line:
+                lines.append(current_line)
+            current_line = word
+    if current_line:
+        lines.append(current_line)
+    return lines
+
+
 
 def add_debug_info(image, message):
     """Debug avec BallonsTranslator"""
@@ -472,15 +498,7 @@ def process_simulation_mode(image, request):
     
     return result_image
 
-def get_font():
-    """Police pour le rendu"""
-    try:
-        return ImageFont.truetype("arial.ttf", 14)
-    except:
-        try:
-            return ImageFont.load_default()
-        except:
-            return None
+
 
 if __name__ == "__main__":
     print("🚀 Démarrage Manga Translator API avec BallonsTranslator Workflow Natif...")
