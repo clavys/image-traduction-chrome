@@ -321,26 +321,23 @@ async def process_with_ballons_translator(image, request):
                             # Tester directement les méthodes qu'on voit dans la liste
                             if hasattr(ocr, 'run_ocr'):
                                 print(f"    Essai run_ocr...")
-                                text = ocr.run_ocr(img_array, textblock)
-                            elif hasattr(ocr, 'ocr_blks'):
-                                print(f"    Essai ocr_blks...")
-                                text = ocr.ocr_blks(img_array, [textblock])
-                                if isinstance(text, list) and text:
-                                    text = text[0]
-                            elif hasattr(ocr, 'detect_and_ocr'):
-                                print(f"    Essai detect_and_ocr...")
-                                text = ocr.detect_and_ocr(img_array)
-                            else:
-                                print(f"    Essai sur région croppée...")
-                                # Essayer sur une région croppée
+                                ocr_result = ocr.run_ocr(img_array, [textblock])  # Passer une liste
+                                if isinstance(ocr_result, list) and ocr_result:
+                                    text = ocr_result[0] if isinstance(ocr_result[0], str) else str(ocr_result[0])
+                                elif isinstance(ocr_result, str):
+                                    text = ocr_result
+                            elif hasattr(ocr, 'ocr_img'):
+                                print(f"    Essai ocr_img...")
+                                # Extraire la région d'abord
                                 if hasattr(textblock, 'xyxy'):
                                     x1, y1, x2, y2 = map(int, textblock.xyxy)
-                                    if y2 > y1 and x2 > x1:  # Vérifier que la région est valide
+                                    if y2 > y1 and x2 > x1:
                                         region_crop = img_array[y1:y2, x1:x2]
-                                        if hasattr(ocr, 'forward'):
-                                            text = ocr.forward(region_crop)
-                                        elif hasattr(ocr, '__call__'):
-                                            text = ocr(region_crop)
+                                        ocr_result = ocr.ocr_img(region_crop)
+                                        if isinstance(ocr_result, list) and ocr_result:
+                                            text = ocr_result[0] if isinstance(ocr_result[0], str) else str(ocr_result[0])
+                                        elif isinstance(ocr_result, str):
+                                            text = ocr_result
                             
                     except Exception as e:
                         print(f"⚠️ OCR échoué pour TextBlock {i+1}: {e}")
