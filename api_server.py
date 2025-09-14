@@ -203,14 +203,16 @@ async def process_with_ballons(image, request):
             print(f"❌ Erreur OCR: {e}")
             return create_error_image(image, f"Erreur OCR: {str(e)}")
         
-        # 3. Traduction uniquement sur les blocs valides
+        # 3. Traduction avec la méthode qui marchait
         translator = ballons_modules['translator']
         translated_count = 0
         
         for blk in blk_list:
             try:
-                text = blk.get_text()
-                if text and text.strip():
+                # Récupérer le texte de la façon qui marchait
+                if hasattr(blk, 'text') and blk.text and blk.text[0].strip():
+                    text = blk.text[0].strip()
+                    
                     translation = translator.translate(text, target_language=request.target_lang)
                     blk.translation = translation
                     translated_count += 1
