@@ -1,4 +1,4 @@
-
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import base64
@@ -169,27 +169,56 @@ async def process_with_ballons(image, request):
         if not blk_list:
             return create_error_image(image, "Aucune zone de texte détectée")
         
-        # 2. OCR
+        # 2. OCR natif avec vérification
         ocr = ballons_modules['ocr']
-        if hasattr(ocr, '_ocr_blk_list'):
-            ocr._ocr_blk_list(img_array, blk_list)
-            print("📖 OCR terminé")
+        print("📖 OCR natif...")
         
-        # 3. Traduction
+        try:
+            if hasattr(ocr, '_ocr_blk_list'):
+                ocr._ocr_blk_list(img_array, blk_list)
+                print("📖 OCR terminé")
+                
+                # Vérifier que l'OCR a bien fonctionné
+                valid_blocks = 0
+                for blk in blk_list:
+                    if hasattr(blk, 'get_text'):
+                        try:
+                            text = blk.get_text()
+                            if text and text.strip():
+                                valid_blocks += 1
+                        except:
+                            pass
+                
+                print(f"📝 {valid_blocks} blocs avec texte détecté")
+                
+                if valid_blocks == 0:
+                    print("⚠️ Aucun texte détecté par l'OCR")
+                    return create_error_image(image, "Aucun texte détecté par l'OCR")
+                
+            else:
+                print("⚠️ Méthode OCR native non trouvée")
+                return create_error_image(image, "Méthode OCR non disponible")
+                
+        except Exception as e:
+            print(f"❌ Erreur OCR: {e}")
+            return create_error_image(image, f"Erreur OCR: {str(e)}")
+        
+        # 3. Traduction uniquement sur les blocs valides
         translator = ballons_modules['translator']
         translated_count = 0
         
         for blk in blk_list:
-            text = blk.get_text()
-            if text and text.strip():
-                try:
+            try:
+                text = blk.get_text()
+                if text and text.strip():
                     translation = translator.translate(text, target_language=request.target_lang)
                     blk.translation = translation
                     translated_count += 1
                     print(f"🔄 '{text}' -> '{translation}'")
-                except Exception as e:
-                    print(f"⚠️ Erreur traduction: {e}")
-                    blk.translation = text  # Garder le texte original
+                    
+            except Exception as e:
+                print(f"⚠️ Erreur sur un bloc: {e}")
+                continue
         
         print(f"📝 {translated_count} blocs traduits")
         
