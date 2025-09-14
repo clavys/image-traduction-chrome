@@ -35,7 +35,7 @@ except ImportError as e:
 from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app):
-    global ballons_modules
+    global global translator_ready, ballons_modules
     try:
         print("🚀 Initialisation API Manga Translator...")
         print(f"📁 Répertoire de travail: {os.getcwd()}")
