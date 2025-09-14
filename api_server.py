@@ -169,39 +169,29 @@ async def process_with_ballons(image, request):
         if not blk_list:
             return create_error_image(image, "Aucune zone de texte détectée")
         
-        # 2. OCR natif avec vérification
+        # 2. OCR - Version qui fonctionnait avant
         ocr = ballons_modules['ocr']
-        print("📖 OCR natif...")
+        print("📖 OCR avec méthode qui marchait...")
         
-        try:
-            if hasattr(ocr, '_ocr_blk_list'):
-                ocr._ocr_blk_list(img_array, blk_list)
-                print("📖 OCR terminé")
+        # Utiliser la méthode manuelle qui fonctionnait
+        for blk in blk_list:
+            if hasattr(blk, 'xyxy'):
+                x1, y1, x2, y2 = map(int, blk.xyxy)
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(img_array.shape[1], x2), min(img_array.shape[0], y2)
                 
-                # Vérifier que l'OCR a bien fonctionné
-                valid_blocks = 0
-                for blk in blk_list:
-                    if hasattr(blk, 'get_text'):
-                        try:
-                            text = blk.get_text()
-                            if text and text.strip():
-                                valid_blocks += 1
-                        except:
-                            pass
-                
-                print(f"📝 {valid_blocks} blocs avec texte détecté")
-                
-                if valid_blocks == 0:
-                    print("⚠️ Aucun texte détecté par l'OCR")
-                    return create_error_image(image, "Aucun texte détecté par l'OCR")
-                
-            else:
-                print("⚠️ Méthode OCR native non trouvée")
-                return create_error_image(image, "Méthode OCR non disponible")
-                
-        except Exception as e:
-            print(f"❌ Erreur OCR: {e}")
-            return create_error_image(image, f"Erreur OCR: {str(e)}")
+                if x2 > x1 and y2 > y1:
+                    region_crop = img_array[y1:y2, x1:x2]
+                    try:
+                        text = ocr.ocr_img(region_crop)
+                        if text and text.strip():
+                            blk.text = [text.strip()]
+                            print(f"📖 Texte détecté: '{text.strip()}'")
+                    except Exception as e:
+                        print(f"❌ OCR région échoué: {e}")
+                        blk.text = [""]
+        
+        print("📖 OCR terminé")
         
         # 3. Traduction avec la méthode qui marchait
         translator = ballons_modules['translator']
