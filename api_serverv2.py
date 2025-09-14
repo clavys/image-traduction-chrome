@@ -265,17 +265,16 @@ async def process_with_ballons_translator(image, request):
     """Traitement complet avec les modules BallonsTranslator"""
     try:
         print("🔍 Détection des zones de texte...")
-        
+
         # Conversion PIL -> numpy
         img_array = np.array(image)
-        
+
         # 1. Détection des zones de texte
         if 'detector' not in ballons_modules:
             print("⚠️ Détecteur non disponible")
             return add_debug_info(image, "Détecteur manquant")
-        
+
         detector = ballons_modules['detector']
-        
         try:
             empty_blk_list = []  # paramètre requis par ComicTextDetector
             mask, text_regions = detector.detect(img_array, empty_blk_list)
@@ -284,31 +283,28 @@ async def process_with_ballons_translator(image, request):
         except Exception as e:
             print(f"❌ Erreur détection: {e}")
             return add_debug_info(image, f"Erreur détection: {str(e)}")
-        
+
         if not text_regions:
             return add_debug_info(image, "Aucune zone de texte détectée")
-        
+
         # 2. OCR sur les zones détectées
         print("📖 Reconnaissance de texte (OCR sur régions)...")
-
         extracted_texts = []
 
         if 'ocr' in ballons_modules:
             ocr = ballons_modules['ocr']
-
-            # Debug: méthodes disponibles
             ocr_methods = [m for m in dir(ocr) if not m.startswith('_')]
             print(f"🔧 Méthodes OCR disponibles: {ocr_methods}")
 
             for i, textblock in enumerate(text_regions):
                 try:
-                    # 1) Récupérer bbox (x,y,w,h)
+                    # Extraire bbox
                     x, y, w, h = _extract_bbox(textblock, img_w=img_array.shape[1], img_h=img_array.shape[0])
                     if w <= 0 or h <= 0:
-                        print(f"⚠️ TextBlock {i+1} bbox invalide: ({x},{y},{w},{h}), skip")
+                        print(f"⚠️ TextBlock {i+1} bbox invalide, skip")
                         continue
 
-                    # Clamp coordonnées à l'image
+                    # Clamp coords à l'image
                     x1, y1 = max(0, int(x)), max(0, int(y))
                     x2, y2 = min(img_array.shape[1], int(x + w)), min(img_array.shape[0], int(y + h))
                     if x2 <= x1 or y2 <= y1:
@@ -320,88 +316,55 @@ async def process_with_ballons_translator(image, request):
                         print(f"⚠️ TextBlock {i+1} region vide, skip")
                         continue
 
-                    print(f"🔍 TextBlock {i+1}: crop {x1},{y1},{x2},{y2} -> shape {region.shape}")
-
-                    # 2) Préparer input pour l'OCR (PIL + numpy)
-                    inputs = _region_to_ocr_input(region)
+                    # Patch OCR input
+                    region_np = np.array(region).astype(np.uint8) if not isinstance(region, np.ndarray) else region
+                    region_pil = Image.fromarray(region_np)
 
                     text = None
                     ocr_output = None
 
-                    # 3) Essayer ocr.ocr_img si disponible
+                    # OCR numpy puis PIL
                     if hasattr(ocr, 'ocr_img'):
                         try:
-                            if inputs['numpy'] is not None:
-                                ocr_output = ocr.ocr_img(inputs['numpy'])
-                            if (not ocr_output) and inputs['pil'] is not None:
-                                ocr_output = ocr.ocr_img(inputs['pil'])
-                            print(f"    ocr.ocr_img résultat: {type(ocr_output)} -> {ocr_output}")
+                            ocr_output = ocr.ocr_img(region_np)
+                            print(f"ocr.ocr_img (numpy) -> {ocr_output}")
                         except Exception as e:
-                            print(f"    ❌ ocr.ocr_img a échoué: {e}")
+                            try:
+                                ocr_output = ocr.ocr_img(region_pil)
+                                print(f"ocr.ocr_img (PIL) -> {ocr_output}")
+                            except Exception:
+                                pass
 
-                    # 4) Fallback sur run_ocr
+                    # Fallback run_ocr
                     if not ocr_output and hasattr(ocr, 'run_ocr'):
                         try:
+                            ocr_output = ocr.run_ocr(region_np)
+                        except Exception:
                             try:
-                                ocr_output = ocr.run_ocr(region)
+                                ocr_output = ocr.run_ocr(region_pil)
                             except Exception:
-                                if inputs['pil'] is not None:
-                                    ocr_output = ocr.run_ocr(inputs['pil'])
-                            print(f"    run_ocr résultat: {type(ocr_output)} -> {ocr_output}")
-                        except Exception as e:
-                            print(f"    ❌ run_ocr a échoué: {e}")
+                                pass
 
-                    # 5) Normaliser le résultat OCR
+                    # Normaliser texte
                     if ocr_output:
                         if isinstance(ocr_output, str):
                             text = ocr_output.strip()
-                        elif isinstance(ocr_output, list):
-                            for item in ocr_output:
-                                if not item:
-                                    continue
-                                if isinstance(item, str):
-                                    text = item.strip()
-                                    break
-                                if isinstance(item, (list, tuple)) and len(item) > 0 and isinstance(item[0], str):
-                                    text = item[0].strip()
-                                    break
-                                if isinstance(item, dict):
-                                    for k in ('text', 'label', 'transcription'):
-                                        if k in item and isinstance(item[k], str) and item[k].strip():
-                                            text = item[k].strip()
-                                            break
-                                if text:
-                                    break
-                            if not text:
-                                text = str(ocr_output)
+                        elif isinstance(ocr_output, (list, tuple)):
+                            text = str(ocr_output[0]).strip()
                         elif isinstance(ocr_output, dict):
-                            for k in ('text', 'transcription', 'label'):
-                                if k in ocr_output and isinstance(ocr_output[k], str):
-                                    text = ocr_output[k].strip()
-                                    break
-                            if not text:
-                                text = str(ocr_output)
+                            text = ocr_output.get("text") or ocr_output.get("label") or str(ocr_output)
                         else:
                             text = str(ocr_output).strip()
 
-                    # 6) fallback: textblock.get_text()
-                    if not text and hasattr(textblock, 'get_text'):
-                        try:
-                            t = textblock.get_text()
-                            if isinstance(t, str) and t.strip():
-                                text = t.strip()
-                                print(f"    get_text() trouvé: {text}")
-                        except Exception:
-                            pass
-
-                    if text and text.strip():
-                        extracted_texts.append((textblock, text.strip()))
-                        print(f"📝 TextBlock {i+1} reconnu: '{text.strip()}'")
+                    if text:
+                        extracted_texts.append((textblock, text))
+                        print(f"📝 TextBlock {i+1} reconnu: '{text}'")
                     else:
                         print(f"⚠️ TextBlock {i+1}: aucun texte reconnu")
                 except Exception as e:
-                    print(f"⚠️ Erreur OCR pour TextBlock {i+1}: {e}")
+                    print(f"⚠️ Erreur OCR TextBlock {i+1}: {e}")
 
+        # Fallback si aucun texte reconnu
         if not extracted_texts:
             print("⚠️ Aucun texte OCR - fallback test_text")
             test_text = "こんにちは"
@@ -411,29 +374,23 @@ async def process_with_ballons_translator(image, request):
         # 3. Traduction
         print("🌐 Traduction des textes...")
         translated_texts = []
-        
+
         if 'translator' in ballons_modules:
             translator = ballons_modules['translator']
-            try:
-                for textblock, text in extracted_texts:
-                    try:
-                        translated = translator.translate(text, target_language=request.target_lang)
-                    except:
-                        translated = translator.translate(text, request.source_lang, request.target_lang)
-                    
-                    translated_texts.append((textblock, text, translated))
-                    print(f"🔄 '{text}' -> '{translated}'")
-            except Exception as e:
-                print(f"❌ Erreur traduction: {e}")
-                for textblock, text in extracted_texts:
-                    translated_texts.append((textblock, text, f"[ERREUR] {text}"))
+            for textblock, text in extracted_texts:
+                try:
+                    translated = translator.translate(text, target_language=request.target_lang)
+                except:
+                    translated = translator.translate(text, request.source_lang, request.target_lang)
+                translated_texts.append((textblock, text, translated))
+                print(f"🔄 '{text}' -> '{translated}'")
         else:
             for textblock, text in extracted_texts:
                 translated_texts.append((textblock, text, f"[NO TRANSLATOR] {text}"))
 
-        # 4. Rendu
+        # 4. Rendu final
         print("🎨 Composition de l'image finale...")
-        if 'inpainter' in ballons_modules and len(translated_texts) > 0:
+        if 'inpainter' in ballons_modules and translated_texts:
             try:
                 print("🖌️ Inpainting avec LamaLarge...")
                 return render_with_inpainting(image, img_array, translated_texts)
@@ -442,13 +399,13 @@ async def process_with_ballons_translator(image, request):
                 return render_ballons_data(image, translated_texts)
         else:
             return render_ballons_data(image, translated_texts)
-      
-        
+
     except Exception as e:
         print(f"❌ Erreur critique BallonsTranslator: {e}")
         import traceback
         traceback.print_exc()
         return add_debug_info(image, f"Erreur: {str(e)}")
+
 
 
 def _extract_bbox(textblock, img_w=None, img_h=None):
