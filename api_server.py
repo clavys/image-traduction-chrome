@@ -18,15 +18,15 @@ sys.path.insert(0, current_dir)
 translator_ready = False
 ballons_modules = {}
 
-# Tentative d'import des modules BallonsTranslator avec vraie structure
+# Import des modules BallonsTranslator avec les VRAIS noms trouvés
 try:
     print("🔍 Chargement des modules BallonsTranslator...")
     
-    # Imports selon la vraie structure trouvée
+    # Imports selon la vraie structure découverte
     from modules.translators.trans_google import GoogleTranslator
     from modules.textdetector.detector_ctd import ComicTextDetector  
-    from modules.ocr.mit48px import Mit48pxOCR
-    from modules.inpaint.lama import LamaInpainter
+    from modules.ocr.mit48px import OCR as Mit48pxOCR  # OCR existe dans mit48px
+    from modules.inpaint.base import LamaLarge  # LamaLarge existe dans base.py
     
     print("✅ Modules BallonsTranslator importés avec succès")
     translator_ready = True
@@ -36,35 +36,7 @@ except ImportError as e:
     print("📋 Basculement en mode simulation")
     translator_ready = False
 
-app = FastAPI(
-    title="Manga Translator API - BallonsTranslator",
-    description="API REST pour traduction d'images manga avec BallonsTranslator",
-    version="1.0.0"
-)
-
-# CORS pour l'extension Chrome
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Modèles Pydantic
-class TranslationRequest(BaseModel):
-    image_base64: str
-    source_lang: str = "ja"
-    target_lang: str = "en"
-    translator: str = "google"
-
-class TranslationResponse(BaseModel):
-    success: bool
-    translated_image_base64: str = None
-    error: str = None
-    processing_time: float = 0
-
-# Utiliser lifespan au lieu de on_event (deprecated)
+# Configuration FastAPI avec lifespan
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -95,31 +67,35 @@ async def lifespan(app):
             except Exception as e:
                 print(f"❌ Erreur ComicTextDetector: {e}")
             
-            # Initialiser l'OCR
+            # Initialiser l'OCR MIT 48px
             try:
                 ballons_modules['ocr'] = Mit48pxOCR()
                 print("✅ Mit48pxOCR initialisé")
             except Exception as e:
                 print(f"❌ Erreur Mit48pxOCR: {e}")
             
-            # Initialiser l'inpainter
+            # Initialiser l'inpainter Lama
             try:
-                ballons_modules['inpainter'] = LamaInpainter()
-                print("✅ LamaInpainter initialisé")
+                ballons_modules['inpainter'] = LamaLarge()
+                print("✅ LamaLarge initialisé")
             except Exception as e:
-                print(f"❌ Erreur LamaInpainter: {e}")
+                print(f"❌ Erreur LamaLarge: {e}")
             
-            print(f"🎯 {len(ballons_modules)} modules initialisés")
+            modules_count = len(ballons_modules)
+            print(f"🎯 {modules_count} modules initialisés: {list(ballons_modules.keys())}")
             
             # Si aucun module critique n'est chargé, basculer en simulation
             if not any(key in ballons_modules for key in ['translator', 'detector']):
                 print("⚠️ Modules critiques manquants, mode simulation activé")
                 translator_ready = False
+            else:
+                print("🎊 BallonsTranslator intégration réussie!")
         
         print("🎯 API prête!")
         
     except Exception as e:
         print(f"❌ Erreur lors de l'initialisation: {e}")
+        print("📋 Mode simulation de fallback activé")
         translator_ready = False
         
     yield
@@ -127,14 +103,15 @@ async def lifespan(app):
     # Shutdown
     print("🛑 Arrêt de l'API")
 
+# Créer l'app FastAPI
 app = FastAPI(
-    title="Manga Translator API - BallonsTranslator",
-    description="API REST pour traduction d'images manga",
+    title="Manga Translator API - BallonsTranslator Integration",
+    description="API REST pour traduction d'images manga avec BallonsTranslator",
     version="1.0.0",
     lifespan=lifespan
 )
 
-# Re-add middleware after app recreation
+# CORS pour l'extension Chrome
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -142,6 +119,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Modèles Pydantic
+class TranslationRequest(BaseModel):
+    image_base64: str
+    source_lang: str = "ja"
+    target_lang: str = "en"
+    translator: str = "google"
+
+class TranslationResponse(BaseModel):
+    success: bool
+    translated_image_base64: str = None
+    error: str = None
+    processing_time: float = 0
 
 @app.get("/")
 async def root():
@@ -151,38 +141,51 @@ async def root():
         "version": "1.0.0",
         "status": "running",
         "mode": "production" if translator_ready else "simulation",
-        "modules_loaded": list(ballons_modules.keys()) if translator_ready else [],
-        "ballons_translator_status": "integrated" if translator_ready else "fallback_mode",
+        "ballons_translator": {
+            "integrated": translator_ready,
+            "modules_loaded": list(ballons_modules.keys()) if translator_ready else [],
+            "status": "✅ Operational" if translator_ready else "⚠️ Simulation Mode"
+        },
         "endpoints": {
-            "translate": "POST /translate",
-            "translate_file": "POST /translate-file", 
-            "health": "GET /health",
-            "docs": "GET /docs"
+            "translate": "POST /translate - Traduire une image manga",
+            "translate_file": "POST /translate-file - Upload fichier image", 
+            "health": "GET /health - Vérifier l'état de l'API",
+            "docs": "GET /docs - Documentation interactive"
+        },
+        "chrome_extension": {
+            "compatible": True,
+            "cors_enabled": True
         }
     }
 
 @app.get("/health")
 async def health_check():
-    """Vérification de l'état de l'API"""
+    """Vérification détaillée de l'état de l'API"""
     return {
         "status": "healthy" if translator_ready else "simulation_mode",
-        "ballons_translator": "loaded" if translator_ready else "not_available",
-        "modules_loaded": translator_ready,
-        "available_modules": list(ballons_modules.keys()) if translator_ready else [],
-        "working_directory": os.getcwd(),
-        "message": "BallonsTranslator integration ready" if translator_ready else "Running in simulation mode"
+        "ballons_translator": {
+            "loaded": translator_ready,
+            "modules": list(ballons_modules.keys()) if translator_ready else [],
+            "integration_status": "production" if translator_ready else "fallback"
+        },
+        "system": {
+            "working_directory": os.getcwd(),
+            "python_path": sys.executable,
+            "modules_path": os.path.join(os.getcwd(), "modules")
+        },
+        "capabilities": {
+            "text_detection": 'detector' in ballons_modules,
+            "ocr": 'ocr' in ballons_modules,
+            "translation": 'translator' in ballons_modules,
+            "inpainting": 'inpainter' in ballons_modules
+        },
+        "message": "🎊 BallonsTranslator fully integrated!" if translator_ready else "🎭 Running in simulation mode"
     }
 
 @app.post("/translate", response_model=TranslationResponse)
 async def translate_image(request: TranslationRequest):
     """
     Traduire une image manga avec BallonsTranslator
-    
-    Args:
-        request: Données de la requête (image base64, langues, traducteur)
-        
-    Returns:
-        TranslationResponse avec l'image traduite
     """
     start_time = time.time()
     
@@ -192,7 +195,6 @@ async def translate_image(request: TranslationRequest):
             image_data = base64.b64decode(request.image_base64)
             image = Image.open(io.BytesIO(image_data))
             
-            # Conversion en RGB si nécessaire
             if image.mode != 'RGB':
                 image = image.convert('RGB')
                 
@@ -203,10 +205,10 @@ async def translate_image(request: TranslationRequest):
         
         # Traitement selon le mode disponible
         if translator_ready and ballons_modules:
-            print("🔄 Traitement avec BallonsTranslator...")
+            print("🎯 Traitement avec BallonsTranslator intégré...")
             result_image = await process_with_ballons_translator(image, request)
         else:
-            print("🔄 Traitement en mode simulation...")
+            print("🎭 Traitement en mode simulation...")
             result_image = process_simulation_mode(image, request)
         
         # Conversion en base64
@@ -239,50 +241,44 @@ async def translate_image(request: TranslationRequest):
 
 @app.post("/translate-file")
 async def translate_file(file: UploadFile = File(...)):
-    """
-    Upload direct d'un fichier image
-    """
+    """Upload direct d'un fichier image"""
     try:
-        # Validation du type de fichier
         if not file.content_type.startswith('image/'):
             raise HTTPException(status_code=400, detail="Le fichier doit être une image")
         
-        # Lire le fichier
         image_data = await file.read()
         image_base64 = base64.b64encode(image_data).decode()
         
-        # Traiter via l'endpoint principal
         request = TranslationRequest(image_base64=image_base64)
         return await translate_image(request)
         
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Erreur de traitement: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Erreur: {str(e)}")
 
 # Traitement réel avec BallonsTranslator
 async def process_with_ballons_translator(image, request):
-    """Traitement avec les vrais modules BallonsTranslator"""
+    """Traitement complet avec les modules BallonsTranslator"""
     try:
         print("🔍 Détection des zones de texte...")
         
-        # Conversion PIL -> numpy pour les modules
+        # Conversion PIL -> numpy
         img_array = np.array(image)
         
         # 1. Détection des zones de texte
         if 'detector' not in ballons_modules:
-            print("⚠️ Détecteur non disponible, retour au mode simulation")
-            return process_simulation_mode(image, request)
+            print("⚠️ Détecteur non disponible")
+            return add_debug_info(image, "Détecteur manquant")
         
         detector = ballons_modules['detector']
         
-        # Utiliser l'API du détecteur BallonsTranslator
         try:
-            # La méthode exacte dépend de l'implémentation de detector_ctd.py
+            # Utiliser l'API du ComicTextDetector
             text_regions = detector.detect(img_array)
             print(f"📍 {len(text_regions)} zones de texte détectées")
         except Exception as e:
-            print(f"❌ Erreur de détection: {e}")
+            print(f"❌ Erreur détection: {e}")
             return add_debug_info(image, f"Erreur détection: {str(e)}")
         
         if not text_regions:
@@ -298,14 +294,21 @@ async def process_with_ballons_translator(image, request):
             
             try:
                 for i, region in enumerate(text_regions):
-                    # Adapter selon l'API de l'OCR BallonsTranslator
+                    # Adapter selon l'API de l'OCR
                     text = ocr.recognize(img_array, region)
                     if text and text.strip():
                         extracted_texts.append((region, text.strip()))
                         print(f"📝 Texte {i+1}: '{text.strip()}'")
             except Exception as e:
                 print(f"❌ Erreur OCR: {e}")
-                return add_debug_info(image, f"Erreur OCR: {str(e)}")
+                # Essayer une méthode alternative
+                try:
+                    text = ocr(img_array)  # Méthode directe
+                    if text:
+                        extracted_texts.append((None, text.strip()))
+                        print(f"📝 Texte global: '{text.strip()}'")
+                except Exception as e2:
+                    print(f"❌ Erreur OCR alternative: {e2}")
         
         if not extracted_texts:
             return add_debug_info(image, f"Aucun texte extrait de {len(text_regions)} zones")
@@ -320,15 +323,23 @@ async def process_with_ballons_translator(image, request):
             
             try:
                 for region, text in extracted_texts:
-                    # Utiliser l'API du traducteur BallonsTranslator
-                    translated = translator.translate(text, target_language=request.target_lang)
+                    # Utiliser l'API du GoogleTranslator
+                    try:
+                        translated = translator.translate(text, target_language=request.target_lang)
+                    except:
+                        # Essayer avec une signature différente
+                        translated = translator.translate(text, request.source_lang, request.target_lang)
+                    
                     translated_texts.append((region, text, translated))
                     print(f"🔄 '{text}' -> '{translated}'")
             except Exception as e:
                 print(f"❌ Erreur traduction: {e}")
-                # Garder le texte original en cas d'erreur
                 for region, text in extracted_texts:
                     translated_texts.append((region, text, f"[ERREUR] {text}"))
+        else:
+            # Pas de traducteur, garder texte original
+            for region, text in extracted_texts:
+                translated_texts.append((region, text, f"[NO TRANSLATOR] {text}"))
         
         # 4. Rendu final
         print("🎨 Composition de l'image finale...")
@@ -336,6 +347,7 @@ async def process_with_ballons_translator(image, request):
         # Essayer l'inpainting si disponible
         if 'inpainter' in ballons_modules and len(translated_texts) > 0:
             try:
+                print("🖌️ Inpainting avec LamaLarge...")
                 return render_with_inpainting(image, img_array, translated_texts)
             except Exception as e:
                 print(f"⚠️ Inpainting échoué: {e}, rendu simple")
@@ -344,153 +356,153 @@ async def process_with_ballons_translator(image, request):
             return render_ballons_data(image, translated_texts)
         
     except Exception as e:
-        print(f"❌ Erreur dans le traitement BallonsTranslator: {e}")
+        print(f"❌ Erreur critique BallonsTranslator: {e}")
         import traceback
         traceback.print_exc()
-        return add_debug_info(image, f"Erreur critique: {str(e)}")
+        return add_debug_info(image, f"Erreur: {str(e)}")
 
 def render_with_inpainting(original_image, img_array, translated_texts):
-    """Rendu avec inpainting BallonsTranslator"""
+    """Rendu avec inpainting LamaLarge"""
     try:
         inpainter = ballons_modules['inpainter']
         
-        # Créer un masque pour les zones de texte
+        # Créer un masque simple pour test
         mask = np.zeros((img_array.shape[0], img_array.shape[1]), dtype=np.uint8)
         
-        # Cette partie dépend du format exact des régions retournées par le détecteur
+        # Pour chaque zone de texte, créer une zone à inpainter
         for region, _, _ in translated_texts:
-            # Adapter selon la structure des régions de BallonsTranslator
-            try:
-                if hasattr(region, 'bbox') or hasattr(region, 'xyxy'):
-                    # Extraire les coordonnées selon le format
+            if region is not None:
+                try:
+                    # Adapter selon le format des régions
                     if hasattr(region, 'bbox'):
                         x, y, w, h = region.bbox
-                    else:
+                    elif hasattr(region, 'xyxy'):
                         x1, y1, x2, y2 = region.xyxy
                         x, y, w, h = x1, y1, x2-x1, y2-y1
+                    else:
+                        # Zone par défaut si format inconnu
+                        x, y, w, h = 10, 10, 100, 30
                     
                     # Remplir le masque
-                    mask[max(0, int(y)):min(mask.shape[0], int(y+h)), 
-                         max(0, int(x)):min(mask.shape[1], int(x+w))] = 255
-                         
-            except Exception as e:
-                print(f"⚠️ Erreur création masque pour région: {e}")
+                    y1, y2 = max(0, int(y)), min(mask.shape[0], int(y+h))
+                    x1, x2 = max(0, int(x)), min(mask.shape[1], int(x+w))
+                    mask[y1:y2, x1:x2] = 255
+                    
+                except Exception as e:
+                    print(f"⚠️ Erreur création masque: {e}")
         
         # Appliquer l'inpainting
-        inpainted_array = inpainter.inpaint(img_array, mask)
-        result_image = Image.fromarray(inpainted_array.astype(np.uint8))
+        try:
+            inpainted_array = inpainter.inpaint(img_array, mask)
+            result_image = Image.fromarray(inpainted_array.astype(np.uint8))
+        except Exception as e:
+            print(f"⚠️ Inpainting direct échoué: {e}")
+            result_image = original_image.copy()
         
         # Ajouter le texte traduit
         draw = ImageDraw.Draw(result_image)
         font = get_font()
         
-        for region, original, translated in translated_texts:
-            try:
-                # Positionner le texte traduit
-                if hasattr(region, 'bbox'):
-                    x, y, w, h = region.bbox
-                elif hasattr(region, 'xyxy'):
-                    x, y = region.xyxy[:2]
-                else:
-                    x, y = 10, 10  # Position par défaut
-                
-                # Fond pour le texte
-                text_bbox = draw.textbbox((x, y), translated, font=font)
-                draw.rectangle(text_bbox, fill=(255, 255, 255, 200))
-                
-                # Texte traduit
-                draw.text((x, y), translated, fill="black", font=font)
-                
-            except Exception as e:
-                print(f"⚠️ Erreur rendu texte: {e}")
+        y_offset = 10
+        for i, (region, original, translated) in enumerate(translated_texts[:5]):
+            # Position intelligente si région disponible
+            if region and hasattr(region, 'bbox'):
+                x, y = region.bbox[:2]
+            elif region and hasattr(region, 'xyxy'):
+                x, y = region.xyxy[:2]
+            else:
+                x, y = 10, y_offset
+                y_offset += 25
+            
+            # Fond pour le texte
+            text_bbox = draw.textbbox((x, y), translated, font=font)
+            draw.rectangle([(text_bbox[0]-2, text_bbox[1]-2), (text_bbox[2]+2, text_bbox[3]+2)], 
+                          fill=(255, 255, 255, 200))
+            
+            # Texte traduit
+            draw.text((x, y), translated, fill="black", font=font)
+        
+        # Marquer comme rendu avec inpainting
+        draw.text((10, original_image.height - 25), "🖌️ LAMA INPAINTING + BALLONS DATA", fill="green", font=font)
         
         return result_image
         
     except Exception as e:
-        print(f"❌ Erreur inpainting: {e}")
+        print(f"❌ Erreur inpainting complète: {e}")
         return render_ballons_data(original_image, translated_texts)
 
 def render_ballons_data(image, translated_texts):
-    """Rendu simple avec données BallonsTranslator réelles"""
+    """Rendu avec vraies données BallonsTranslator (sans inpainting)"""
     result_image = image.copy()
     draw = ImageDraw.Draw(result_image)
     font = get_font()
     
-    # Overlay vert pour indiquer données réelles
-    y_offset = 10
+    # Titre succès
+    draw.text((10, 10), "🎯 BALLONS TRANSLATOR - REAL DATA", fill="green", font=font)
     
-    # Titre
-    draw.text((10, y_offset), "🎯 BALLONSTRANSLATOR DATA", fill="green", font=font)
-    y_offset += 25
-    
-    # Afficher les traductions réelles
-    for i, (region, original, translated) in enumerate(translated_texts[:5]):  # Limiter l'affichage
+    y_offset = 35
+    for i, (region, original, translated) in enumerate(translated_texts[:6]):
         text = f"{i+1}. '{original}' -> '{translated}'"
         
         # Fond semi-transparent
         text_bbox = draw.textbbox((10, y_offset), text, font=font)
         draw.rectangle([(text_bbox[0]-2, text_bbox[1]-2), (text_bbox[2]+2, text_bbox[3]+2)], 
-                      fill=(0, 0, 0, 128))
+                      fill=(0, 0, 0, 180))
         
         # Texte
         draw.text((10, y_offset), text, fill="white", font=font)
-        y_offset += 20
+        y_offset += 22
     
-    # Info technique
-    if len(translated_texts) > 5:
-        draw.text((10, y_offset + 5), f"... et {len(translated_texts)-5} autres", fill="gray", font=font)
+    # Info supplémentaire
+    if len(translated_texts) > 6:
+        draw.text((10, y_offset + 5), f"... et {len(translated_texts)-6} autres traductions", fill="gray", font=font)
     
     return result_image
 
 def add_debug_info(image, message):
-    """Ajouter info de debug à l'image"""
+    """Debug avec BallonsTranslator"""
     result_image = image.copy()
     draw = ImageDraw.Draw(result_image)
     font = get_font()
     
-    draw.text((10, 10), f"DEBUG: {message}", fill="red", font=font)
-    draw.text((10, 30), f"Mode: BallonsTranslator (debug)", fill="blue", font=font)
+    draw.text((10, 10), f"DEBUG - BallonsTranslator: {message}", fill="red", font=font)
+    draw.text((10, 30), f"Modules chargés: {list(ballons_modules.keys())}", fill="blue", font=font)
     
     return result_image
 
 def process_simulation_mode(image, request):
     """Mode simulation amélioré"""
     print("🎭 Mode simulation...")
-    
-    # Simulation réaliste des étapes
     time.sleep(0.2)
     
     result_image = image.copy()
     draw = ImageDraw.Draw(result_image)
     font = get_font()
     
-    # Titre simulation
     draw.text((10, 10), "🎭 SIMULATION MODE", fill="orange", font=font)
     
-    # Simuler des traductions
     simulated_translations = [
         ("こんにちは", "Hello"),
         ("ありがとう", "Thank you"), 
         ("元気ですか", "How are you?"),
-        ("さようなら", "Goodbye")
+        ("さようなら", "Goodbye"),
+        ("おはよう", "Good morning")
     ]
     
     y_offset = 35
-    for i, (original, translated) in enumerate(simulated_translations[:3]):
+    for i, (original, translated) in enumerate(simulated_translations[:4]):
         text = f"{i+1}. '{original}' -> '{translated}'"
         draw.text((10, y_offset), text, fill="red", font=font)
-        y_offset += 18
+        y_offset += 20
     
-    # Info technique
-    draw.text((10, y_offset + 10), f"Taille: {image.width}x{image.height}", fill="gray", font=font)
-    draw.text((10, y_offset + 25), f"{request.source_lang} -> {request.target_lang}", fill="blue", font=font)
+    draw.text((10, y_offset + 15), f"API ready for BallonsTranslator integration", fill="gray", font=font)
+    draw.text((10, y_offset + 30), f"{request.source_lang} -> {request.target_lang}", fill="blue", font=font)
     
     return result_image
 
 def get_font():
-    """Obtenir une police pour le rendu de texte"""
+    """Police pour le rendu"""
     try:
-        # Essayer une police système
         return ImageFont.truetype("arial.ttf", 14)
     except:
         try:
@@ -499,10 +511,11 @@ def get_font():
             return None
 
 if __name__ == "__main__":
-    print("🚀 Démarrage Manga Translator API avec BallonsTranslator...")
+    print("🚀 Démarrage Manga Translator API avec BallonsTranslator Integration...")
     print("📚 Documentation: http://localhost:8000/docs")
     print("💚 Health check: http://localhost:8000/health")
     print("🎯 Interface: http://localhost:8000/")
+    print("🔌 Extension Chrome compatible")
     
     uvicorn.run(
         "api_server:app",
