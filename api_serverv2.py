@@ -2,6 +2,7 @@ import io
 import base64
 import threading
 import numpy as np
+import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 from PIL import Image
@@ -68,6 +69,16 @@ async def translate(data: TranslateRequest):
         return {"success": False, "error": str(e)}
 
 if __name__ == "__main__":
-    import uvicorn
-    print("🚀 Initialisation API Manga Translator...")
-    uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
+    print("🚀 Démarrage Manga Translator API avec BallonsTranslator Workflow Natif...")
+    print("📚 Documentation: http://localhost:8000/docs")
+    print("💚 Health check: http://localhost:8000/health")
+    print("🎯 Interface: http://localhost:8000/")
+    print("🔌 Extension Chrome compatible")
+    
+    uvicorn.run(
+        "api_server:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )
