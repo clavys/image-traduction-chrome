@@ -22,19 +22,31 @@ try:
     # Imports progressifs des modules BallonsTranslator
     print("Loading BallonsTranslator modules...")
     
-    # Import des modules de base
-    from modules.translators.google import GoogleTranslator
-    from modules.textdetector.ctd import ComicTextDetector  
-    from modules.ocr.mit48px import Mit48pxOCR
-    from modules.inpaint.lama_large_512px import LamaLargeInpainter
+    # Import des modules selon la vraie structure
+    from modules.translators.trans_google import GoogleTranslator
+    from modules.textdetector.detector_ctd import ComicTextDetector  
+    from modules.ocr.mit48px import Mit48pxOCR  # À vérifier
+    from modules.inpaint.lama_large_512px import LamaLargeInpainter  # À vérifier
     
     print("✅ BallonsTranslator modules imported successfully")
     translator_ready = True
     
 except ImportError as e:
     print(f"⚠️ Could not import BallonsTranslator modules: {e}")
-    print("Falling back to simulation mode")
-    translator_ready = False
+    
+    # Essayons des imports plus basiques
+    try:
+        print("Trying basic imports...")
+        import modules.translators.trans_google as google_trans
+        import modules.textdetector.detector_ctd as ctd_detector
+        
+        print("✅ Basic modules imported successfully")
+        translator_ready = True
+        
+    except ImportError as e2:
+        print(f"⚠️ Basic imports also failed: {e2}")
+        print("Falling back to simulation mode")
+        translator_ready = False
 
 app = FastAPI(
     title="Balloons Translator API",
