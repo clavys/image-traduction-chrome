@@ -321,23 +321,40 @@ async def process_with_ballons_translator(image, request):
                             # Tester directement les méthodes qu'on voit dans la liste
                             if hasattr(ocr, 'run_ocr'):
                                 print(f"    Essai run_ocr...")
-                                ocr_result = ocr.run_ocr(img_array, [textblock])  # Passer une liste
-                                if isinstance(ocr_result, list) and ocr_result:
-                                    text = ocr_result[0] if isinstance(ocr_result[0], str) else str(ocr_result[0])
-                                elif isinstance(ocr_result, str):
-                                    text = ocr_result
+                                try:
+                                    ocr_result = ocr.run_ocr(img_array, [textblock])  # Passer une liste
+                                    print(f"    run_ocr résultat type: {type(ocr_result)}, contenu: {ocr_result}")
+                                    
+                                    if isinstance(ocr_result, list) and ocr_result:
+                                        first_result = ocr_result[0]
+                                        print(f"    Premier élément type: {type(first_result)}, contenu: {first_result}")
+                                        if isinstance(first_result, str):
+                                            text = first_result
+                                        elif hasattr(first_result, 'text'):
+                                            text = first_result.text
+                                        else:
+                                            text = str(first_result)
+                                    elif isinstance(ocr_result, str):
+                                        text = ocr_result
+                                except Exception as e:
+                                    print(f"    run_ocr échoué: {e}")
+                                    
                             elif hasattr(ocr, 'ocr_img'):
                                 print(f"    Essai ocr_img...")
-                                # Extraire la région d'abord
-                                if hasattr(textblock, 'xyxy'):
-                                    x1, y1, x2, y2 = map(int, textblock.xyxy)
-                                    if y2 > y1 and x2 > x1:
-                                        region_crop = img_array[y1:y2, x1:x2]
-                                        ocr_result = ocr.ocr_img(region_crop)
-                                        if isinstance(ocr_result, list) and ocr_result:
-                                            text = ocr_result[0] if isinstance(ocr_result[0], str) else str(ocr_result[0])
-                                        elif isinstance(ocr_result, str):
-                                            text = ocr_result
+                                try:
+                                    # Extraire la région d'abord
+                                    if hasattr(textblock, 'xyxy'):
+                                        x1, y1, x2, y2 = map(int, textblock.xyxy)
+                                        if y2 > y1 and x2 > x1:
+                                            region_crop = img_array[y1:y2, x1:x2]
+                                            ocr_result = ocr.ocr_img(region_crop)
+                                            print(f"    ocr_img résultat: {type(ocr_result)}, {ocr_result}")
+                                            if isinstance(ocr_result, list) and ocr_result:
+                                                text = ocr_result[0] if isinstance(ocr_result[0], str) else str(ocr_result[0])
+                                            elif isinstance(ocr_result, str):
+                                                text = ocr_result
+                                except Exception as e:
+                                    print(f"    ocr_img échoué: {e}")
                             
                     except Exception as e:
                         print(f"⚠️ OCR échoué pour TextBlock {i+1}: {e}")
