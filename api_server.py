@@ -1,3 +1,22 @@
+# 3. Traduction sécurisée
+        translator = ballons_modules['translator']
+        translated_count = 0
+        
+        for blk in blk_list:
+            # Vérifier que le bloc a du texte
+            text = None
+            try:
+                if hasattr(blk, 'get_text'):
+                    text = blk.get_text()
+                elif hasattr(blk, 'text') and blk.text:
+                    if isinstance(blk.text, list):
+                        text = ' '.join(blk.text).strip()
+                    else:
+                        text = str(blk.text).strip()
+            except:
+                text = None
+            
+            if text anfrom fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import base64
@@ -192,12 +211,22 @@ async def process_with_ballons(image, request):
         
         print(f"📝 {translated_count} blocs traduits")
         
-        # 4. Rendu avec BallonsTranslator
-        result_img = render_with_ballons_native(img_array, blk_list)
+        if translated_count == 0:
+            return create_error_image(image, "Aucune traduction réussie")
         
-        if result_img is not None:
-            return Image.fromarray(result_img.astype(np.uint8))
-        else:
+        # 4. Rendu avec BallonsTranslator (uniquement si on a des traductions)
+        try:
+            result_img = render_with_ballons_native(img_array, blk_list)
+            
+            if result_img is not None:
+                return Image.fromarray(result_img.astype(np.uint8))
+            else:
+                print("⚠️ Rendu natif échoué, utilisation du rendu simple")
+                return render_simple(image, blk_list)
+                
+        except Exception as render_error:
+            print(f"❌ Erreur rendu natif: {render_error}")
+            print("🎨 Utilisation du rendu simple de secours")
             return render_simple(image, blk_list)
         
     except Exception as e:
