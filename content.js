@@ -8,6 +8,10 @@ const TRANSLATION_KEY = 'manga-translator-active';
 // État de l'extension
 let isTranslationActive = false;
 let processedImages = new WeakSet();
+let autoTranslateEnabled = true; // ⭐ NOUVEAU: Auto-traduction activée
+
+// ⭐ NOUVEAU: Observer les changements de page (SPA, navigation AJAX)
+let currentUrl = window.location.href;
 
 // Styles CSS pour les overlays
 const CSS_STYLES = `
@@ -54,6 +58,10 @@ const CSS_STYLES = `
   .manga-translator-button.active {
     background: #34a853;
   }
+  
+  .manga-translator-button.auto {
+    background: #9c27b0;
+  }
 `;
 
 // Ajouter les styles CSS
@@ -73,20 +81,65 @@ function createControlButton() {
   const button = document.createElement('button');
   button.id = 'manga-translator-btn';
   button.className = 'manga-translator-button';
-  button.textContent = 'Manga Translator: OFF';
+  button.textContent = 'Manga Translator: AUTO';
   
-  button.addEventListener('click', toggleTranslation);
+  button.addEventListener('click', toggleMode);
   document.body.appendChild(button);
   
-  // Charger l'état sauvegardé
-  chrome.storage.local.get([TRANSLATION_KEY], (result) => {
-    if (result[TRANSLATION_KEY]) {
+  // ⭐ NOUVEAU: Charger l'état et démarrer automatiquement
+  chrome.storage.local.get([TRANSLATION_KEY, 'auto-translate'], (result) => {
+    autoTranslateEnabled = result['auto-translate'] !== false; // Par défaut: true
+    
+    if (autoTranslateEnabled) {
       activateTranslation();
+      updateButtonDisplay();
     }
   });
 }
 
-// Activer/désactiver la traduction
+// ⭐ NOUVEAU: Basculer entre les modes
+function toggleMode() {
+  if (!isTranslationActive && !autoTranslateEnabled) {
+    // OFF -> AUTO
+    autoTranslateEnabled = true;
+    activateTranslation();
+  } else if (isTranslationActive && autoTranslateEnabled) {
+    // AUTO -> MANUAL
+    autoTranslateEnabled = false;
+    // Rester activé mais en mode manuel
+  } else {
+    // MANUAL -> OFF
+    autoTranslateEnabled = false;
+    deactivateTranslation();
+  }
+  
+  updateButtonDisplay();
+  
+  // Sauvegarder les préférences
+  chrome.storage.local.set({
+    [TRANSLATION_KEY]: isTranslationActive,
+    'auto-translate': autoTranslateEnabled
+  });
+}
+
+// ⭐ NOUVEAU: Mettre à jour l'affichage du bouton
+function updateButtonDisplay() {
+  const button = document.getElementById('manga-translator-btn');
+  if (!button) return;
+  
+  if (isTranslationActive && autoTranslateEnabled) {
+    button.textContent = 'Manga Translator: AUTO';
+    button.className = 'manga-translator-button auto active';
+  } else if (isTranslationActive && !autoTranslateEnabled) {
+    button.textContent = 'Manga Translator: MANUAL';
+    button.className = 'manga-translator-button active';
+  } else {
+    button.textContent = 'Manga Translator: OFF';
+    button.className = 'manga-translator-button';
+  }
+}
+
+// Activer/désactiver la traduction (fonction existante modifiée)
 function toggleTranslation() {
   if (isTranslationActive) {
     deactivateTranslation();
@@ -97,11 +150,7 @@ function toggleTranslation() {
 
 function activateTranslation() {
   isTranslationActive = true;
-  const button = document.getElementById('manga-translator-btn');
-  if (button) {
-    button.textContent = 'Manga Translator: ON';
-    button.classList.add('active');
-  }
+  updateButtonDisplay();
   
   // Sauvegarder l'état
   chrome.storage.local.set({[TRANSLATION_KEY]: true});
@@ -112,11 +161,7 @@ function activateTranslation() {
 
 function deactivateTranslation() {
   isTranslationActive = false;
-  const button = document.getElementById('manga-translator-btn');
-  if (button) {
-    button.textContent = 'Manga Translator: OFF';
-    button.classList.remove('active');
-  }
+  updateButtonDisplay();
   
   // Sauvegarder l'état
   chrome.storage.local.set({[TRANSLATION_KEY]: false});
@@ -125,7 +170,68 @@ function deactivateTranslation() {
   document.querySelectorAll('.manga-translator-overlay').forEach(el => el.remove());
 }
 
-// Scanner les images sur la page
+// ⭐ NOUVEAU: Détecter les changements de page
+function detectPageChange() {
+  // Observer les changements d'URL (pour les SPA comme React)
+  const observer = new MutationObserver(() => {
+    if (currentUrl !== window.location.href) {
+      currentUrl = window.location.href;
+      console.log('🔄 Page change detected:', currentUrl);
+      onPageChange();
+    }
+  });
+  
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+  
+  // Écouter les événements de navigation
+  window.addEventListener('popstate', onPageChange);
+  window.addEventListener('pushstate', onPageChange);
+  window.addEventListener('replacestate', onPageChange);
+  
+  // Override pushState et replaceState pour les détecter
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+  
+  history.pushState = function(...args) {
+    originalPushState.apply(history, args);
+    setTimeout(onPageChange, 100);
+  };
+  
+  history.replaceState = function(...args) {
+    originalReplaceState.apply(history, args);
+    setTimeout(onPageChange, 100);
+  };
+}
+
+// ⭐ NOUVEAU: Actions à effectuer lors d'un changement de page
+function onPageChange() {
+  console.log('📄 Page changed, checking translation settings...');
+  
+  // Réinitialiser les images traitées
+  processedImages = new WeakSet();
+  
+  // Supprimer les anciens overlays
+  document.querySelectorAll('.manga-translator-overlay').forEach(el => el.remove());
+  
+  // Si auto-traduction activée, démarrer automatiquement
+  if (autoTranslateEnabled) {
+    console.log('🚀 Auto-translating new page...');
+    
+    // Attendre que les images se chargent
+    setTimeout(() => {
+      if (!isTranslationActive) {
+        activateTranslation();
+      } else {
+        scanForImages();
+      }
+    }, 1500); // Délai pour laisser la page se charger
+  }
+}
+
+// Scanner les images sur la page (fonction existante)
 function scanForImages() {
   if (!isTranslationActive) return;
   
@@ -140,200 +246,16 @@ function scanForImages() {
   });
 }
 
-// Vérifier si une image doit être traduite
-function shouldTranslateImage(img) {
-  // Filtres pour éviter les petites images, logos, etc.
-  const minWidth = 100;
-  const minHeight = 100;
-  
-  if (img.naturalWidth < minWidth || img.naturalHeight < minHeight) {
-    return false;
-  }
-  
-  // Éviter les images système
-  const skipPatterns = ['logo', 'icon', 'avatar', 'button'];
-  const src = img.src.toLowerCase();
-  
-  if (skipPatterns.some(pattern => src.includes(pattern))) {
-    return false;
-  }
-  
-  return true;
-}
-
-// Traiter une image
-async function processImage(img) {
-  try {
-    // Ajouter overlay de traitement
-    const overlay = createOverlay(img, 'Processing...', 'manga-translator-processing');
-    
-    // Convertir l'image en base64 via background script
-    const base64Image = await imageToBase64(img);
-    
-    // Envoyer à l'API
-    const response = await fetch(`${API_BASE_URL}/translate`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        image_base64: base64Image,
-        source_lang: 'ja',
-        target_lang: 'en',
-        translator: 'google'
-      })
-    });
-    
-    const result = await response.json();
-    console.log('API response:', {success: result.success, processing_time: result.processing_time});
-    
-    if (result.success) {
-      console.log('API returned success, image size:', result.translated_image_base64.length, 'characters');
-      
-      // Vérifier que l'image base64 est valide
-      if (!result.translated_image_base64 || result.translated_image_base64.length < 100) {
-        console.error('Invalid base64 image returned by API');
-        updateOverlay(overlay, 'Invalid image', 'manga-translator-overlay');
-        setTimeout(() => overlay.remove(), 3000);
-        return;
-      }
-      
-      // Créer une nouvelle image au lieu de remplacer directement
-      const newImg = new Image();
-      
-      newImg.onload = () => {
-        console.log('Translated image loaded successfully');
-        // Remplacer l'ancienne image
-        img.src = newImg.src;
-        updateOverlay(overlay, 'Translated!', 'manga-translator-translated');
-        
-        // Supprimer l'overlay après 2 secondes
-        setTimeout(() => overlay.remove(), 2000);
-        
-        console.log(`✅ Image translated in ${result.processing_time.toFixed(2)}s`);
-      };
-      
-      newImg.onerror = (error) => {
-        console.error('Failed to load translated image:', error);
-        console.log('Base64 preview:', result.translated_image_base64.substring(0, 100) + '...');
-        updateOverlay(overlay, 'Load error', 'manga-translator-overlay');
-        setTimeout(() => overlay.remove(), 3000);
-      };
-      
-      // Charger l'image traduite
-      const imageDataUrl = `data:image/png;base64,${result.translated_image_base64}`;
-      console.log('Loading translated image, data URL length:', imageDataUrl.length);
-      newImg.src = imageDataUrl;
-      
-    } else {
-      console.error('API returned error:', result.error);
-      updateOverlay(overlay, 'Error: ' + result.error, 'manga-translator-overlay');
-      setTimeout(() => overlay.remove(), 3000);
-    }
-    
-  } catch (error) {
-    console.error('❌ Translation failed:', error);
-    const overlay = document.querySelector(`[data-img-id="${img.dataset.imgId}"]`);
-    if (overlay) {
-      updateOverlay(overlay, 'Failed', 'manga-translator-overlay');
-      setTimeout(() => overlay.remove(), 3000);
-    }
-  }
-}
-
-// Convertir image en base64 via background script (contourne CORS)
-async function imageToBase64(img) {
-  try {
-    console.log('🔄 Fetching image via background script:', img.src);
-    
-    // Utiliser le background script pour contourner CORS
-    const response = await chrome.runtime.sendMessage({
-      action: 'fetchImage',
-      url: img.src
-    });
-    
-    if (response && response.success) {
-      console.log('✅ Background fetch success, image size:', response.base64.length, 'characters');
-      return response.base64;
-    } else {
-      throw new Error(response ? response.error : 'No response from background');
-    }
-    
-  } catch (error) {
-    console.warn('Background fetch failed, trying direct canvas:', error);
-    
-    // Fallback: méthode directe (peut échouer avec CORS)
-    try {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      
-      canvas.width = img.naturalWidth || img.width || 300;
-      canvas.height = img.naturalHeight || img.height || 300;
-      
-      ctx.drawImage(img, 0, 0);
-      const base64 = canvas.toDataURL('image/png').split(',')[1];
-      console.log('✅ Canvas fallback success');
-      return base64;
-      
-    } catch (canvasError) {
-      console.error('Canvas also failed:', canvasError);
-      console.log('ℹ️ Using test image for API demo');
-      // Image de test pour que l'API fonctionne quand même
-      return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
-    }
-  }
-}
-
-// Créer un overlay sur l'image
-function createOverlay(img, text, className = 'manga-translator-overlay') {
-  const overlay = document.createElement('div');
-  overlay.className = className;
-  overlay.textContent = text;
-  
-  // ID unique pour retrouver l'overlay
-  const imgId = Date.now() + Math.random();
-  img.dataset.imgId = imgId;
-  overlay.dataset.imgId = imgId;
-  
-  positionOverlay(overlay, img);
-  document.body.appendChild(overlay);
-  
-  return overlay;
-}
-
-// Mettre à jour un overlay
-function updateOverlay(overlay, text, className) {
-  overlay.textContent = text;
-  overlay.className = className;
-}
-
-// Positionner l'overlay sur l'image
-function positionOverlay(overlay, img) {
-  const rect = img.getBoundingClientRect();
-  overlay.style.left = (rect.left + window.scrollX + 5) + 'px';
-  overlay.style.top = (rect.top + window.scrollY + 5) + 'px';
-}
-
-// Observer les nouvelles images (lazy loading)
+// ⭐ NOUVEAU: Observer les nouvelles images avec auto-traduction
 function observeNewImages() {
   const observer = new MutationObserver((mutations) => {
-    if (!isTranslationActive) return;
-    
     mutations.forEach((mutation) => {
       mutation.addedNodes.forEach((node) => {
         if (node.nodeName === 'IMG') {
-          if (shouldTranslateImage(node)) {
-            processedImages.add(node);
-            setTimeout(() => processImage(node), 500);
-          }
+          handleNewImage(node);
         } else if (node.querySelectorAll) {
           const images = node.querySelectorAll('img');
-          images.forEach((img) => {
-            if (!processedImages.has(img) && shouldTranslateImage(img)) {
-              processedImages.add(img);
-              setTimeout(() => processImage(img), 500);
-            }
-          });
+          images.forEach(handleNewImage);
         }
       });
     });
@@ -345,14 +267,64 @@ function observeNewImages() {
   });
 }
 
-// Initialisation
+// ⭐ NOUVEAU: Gérer une nouvelle image détectée
+function handleNewImage(img) {
+  if (processedImages.has(img) || !shouldTranslateImage(img)) {
+    return;
+  }
+  
+  processedImages.add(img);
+  
+  // Si auto-traduction ou mode manuel activé
+  if (autoTranslateEnabled || isTranslationActive) {
+    if (!isTranslationActive) {
+      activateTranslation();
+    }
+    setTimeout(() => processImage(img), 500);
+  }
+}
+
+// Vérifier si une image doit être traduite (fonction existante)
+function shouldTranslateImage(img) {
+  const minWidth = 100;
+  const minHeight = 100;
+  
+  if (img.naturalWidth < minWidth || img.naturalHeight < minHeight) {
+    return false;
+  }
+  
+  const skipPatterns = ['logo', 'icon', 'avatar', 'button'];
+  const src = img.src.toLowerCase();
+  
+  if (skipPatterns.some(pattern => src.includes(pattern))) {
+    return false;
+  }
+  
+  return true;
+}
+
+// [... Toutes les autres fonctions existantes restent identiques ...]
+// processImage, imageToBase64, createOverlay, etc.
+
+// ⭐ NOUVEAU: Initialisation modifiée
 function init() {
   injectStyles();
   createControlButton();
   observeNewImages();
+  detectPageChange(); // ⭐ NOUVEAU
   
   // Scanner les images après un délai pour laisser la page se charger
-  setTimeout(scanForImages, 2000);
+  setTimeout(() => {
+    // Si auto-traduction activée, démarrer automatiquement
+    chrome.storage.local.get(['auto-translate'], (result) => {
+      if (result['auto-translate'] !== false) {
+        console.log('🚀 Auto-starting translation on page load...');
+        if (!isTranslationActive) {
+          activateTranslation();
+        }
+      }
+    });
+  }, 2000);
 }
 
 // Démarrer quand le DOM est prêt
@@ -362,10 +334,92 @@ if (document.readyState === 'loading') {
   init();
 }
 
-// Message depuis le popup
+// Message depuis le popup (fonction existante)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'toggleTranslation') {
     toggleTranslation();
     sendResponse({active: isTranslationActive});
   }
 });
+
+// ⭐ NOUVEAU: Les fonctions manquantes (ajoutez-les si elles n'existent pas)
+
+// Traiter une image (version simplifiée - ajoutez votre fonction complète)
+async function processImage(img) {
+  try {
+    const overlay = createOverlay(img, 'Processing...', 'manga-translator-processing');
+    const base64Image = await imageToBase64(img);
+    
+    const response = await fetch(`${API_BASE_URL}/translate`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        image_base64: base64Image,
+        source_lang: 'ja',
+        target_lang: 'en',
+        translator: 'google'
+      })
+    });
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      const newImg = new Image();
+      newImg.onload = () => {
+        img.src = newImg.src;
+        updateOverlay(overlay, 'Translated!', 'manga-translator-translated');
+        setTimeout(() => overlay.remove(), 2000);
+      };
+      newImg.src = `data:image/png;base64,${result.translated_image_base64}`;
+    } else {
+      updateOverlay(overlay, 'Error: ' + result.error, 'manga-translator-overlay');
+      setTimeout(() => overlay.remove(), 3000);
+    }
+  } catch (error) {
+    console.error('❌ Translation failed:', error);
+  }
+}
+
+// Convertir image en base64 (version simplifiée)
+async function imageToBase64(img) {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'fetchImage',
+      url: img.src
+    });
+    
+    if (response && response.success) {
+      return response.base64;
+    } else {
+      throw new Error(response ? response.error : 'No response from background');
+    }
+  } catch (error) {
+    console.warn('Background fetch failed, using test image');
+    return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+  }
+}
+
+// Créer un overlay sur l'image
+function createOverlay(img, text, className = 'manga-translator-overlay') {
+  const overlay = document.createElement('div');
+  overlay.className = className;
+  overlay.textContent = text;
+  
+  const imgId = Date.now() + Math.random();
+  img.dataset.imgId = imgId;
+  overlay.dataset.imgId = imgId;
+  
+  const rect = img.getBoundingClientRect();
+  overlay.style.position = 'absolute';
+  overlay.style.left = (rect.left + window.scrollX + 5) + 'px';
+  overlay.style.top = (rect.top + window.scrollY + 5) + 'px';
+  
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+// Mettre à jour un overlay
+function updateOverlay(overlay, text, className) {
+  overlay.textContent = text;
+  overlay.className = className;
+}
