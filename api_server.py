@@ -283,33 +283,9 @@ async def translate_image_ballons_style(image, request):
             print("📖 OCR avec méthode interne BallonsTranslator...")
             
             try:
-                # Utiliser la vraie méthode interne documentée dans le code source
                 if hasattr(ocr, '_ocr_blk_list'):
-                    print("    Utilisation de _ocr_blk_list (méthode interne)")
                     ocr._ocr_blk_list(img_array, blk_list)
-                elif hasattr(ocr, 'run_ocr'):
-                    print("    Utilisation de run_ocr")
-                    result = ocr.run_ocr(img_array, blk_list)
-                    if isinstance(result, list):
-                        blk_list = result
-                else:
-                    print("    Méthode OCR non trouvée, utilisation manuelle")
-                    # Fallback vers notre méthode manuelle
-                    for blk in blk_list:
-                        if hasattr(blk, 'xyxy'):
-                            x1, y1, x2, y2 = map(int, blk.xyxy)
-                            x1, y1 = max(0, x1), max(0, y1)
-                            x2, y2 = min(im_w, x2), min(im_h, y2)
-                            
-                            if x2 > x1 and y2 > y1:
-                                region_crop = img_array[y1:y2, x1:x2]
-                                try:
-                                    text = ocr.ocr_img(region_crop)
-                                    if text and text.strip():
-                                        blk.text = [text.strip()]
-                                except Exception as e:
-                                    print(f"    OCR manuel échoué: {e}")
-                
+   
             except Exception as e:
                 print(f"❌ Erreur OCR interne: {e}")
         
