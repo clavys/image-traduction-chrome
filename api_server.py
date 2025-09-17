@@ -196,8 +196,25 @@ async def translate_image(request: TranslationRequest):
             
             if image.mode != 'RGB':
                 image = image.convert('RGB')
+
+
+            #  NOUVELLE OPTIMISATION : Redimensionner si trop grande
+            original_size = (image.width, image.height)
+            max_size = 1024  # Taille maximum pour le traitement
+            
+            if max(image.width, image.height) > max_size:
+                # Calculer le ratio pour garder les proportions
+                ratio = min(max_size / image.width, max_size / image.height)
+                new_width = int(image.width * ratio)
+                new_height = int(image.height * ratio)
                 
-            print(f"📸 Image reçue: {image.width}x{image.height}, mode: {image.mode}")
+                print(f"📏 Redimensionnement: {original_size} -> ({new_width}, {new_height})")
+                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            else:
+                print(f"📏 Taille OK: {original_size}")
+                
+            print(f"📸 Image traitée: {image.width}x{image.height}, mode: {image.mode}")
+                
                 
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Image invalide: {str(e)}")
