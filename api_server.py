@@ -10,6 +10,59 @@ import uvicorn
 import time
 import numpy as np
 
+class ModuleCache:
+    """Cache pour éviter de réinitialiser les modules à chaque requête"""
+    def __init__(self):
+        self._cached_modules = {}
+        self._initialization_times = {}
+        self.cache_hits = 0
+        self.cache_misses = 0
+    
+    def get_module(self, module_name):
+        """Récupérer un module du cache"""
+        if module_name in self._cached_modules:
+            self.cache_hits += 1
+            print(f"Cache HIT pour {module_name} (hits: {self.cache_hits})")
+            return self._cached_modules[module_name]
+        
+        self.cache_misses += 1
+        print(f"Cache MISS pour {module_name} (misses: {self.cache_misses})")
+        return None
+    
+    def set_module(self, module_name, module_instance, init_time=0):
+        """Mettre un module en cache"""
+        self._cached_modules[module_name] = module_instance
+        self._initialization_times[module_name] = init_time
+        print(f"Module {module_name} mis en cache (init: {init_time:.2f}s)")
+    
+    def get_stats(self):
+        """Statistiques du cache"""
+        return {
+            'cached_modules': list(self._cached_modules.keys()),
+            'cache_hits': self.cache_hits,
+            'cache_misses': self.cache_misses,
+            'hit_ratio': self.cache_hits / max(1, self.cache_hits + self.cache_misses)
+        }
+    
+module_cache = ModuleCache()
+
+# Fonction helper pour obtenir les modules avec cache
+def get_cached_module(module_name):
+    """Obtenir un module depuis le cache ou ballons_modules"""
+    # Essayer le cache d'abord
+    cached_module = module_cache.get_module(module_name)
+    if cached_module:
+        return cached_module
+    
+    # Fallback vers ballons_modules si pas en cache
+    if module_name in ballons_modules:
+        module_instance = ballons_modules[module_name]
+        module_cache.set_module(module_name, module_instance)
+        return module_instance
+    
+    print(f"Module {module_name} non disponible")
+    return None
+
 # Ajouter le chemin vers BallonsTranslator
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
@@ -17,6 +70,7 @@ sys.path.insert(0, current_dir)
 # État des modules BallonsTranslator
 translator_ready = False
 ballons_modules = {}
+
 
 # Import des modules BallonsTranslator
 try:
@@ -314,7 +368,9 @@ async def translate_image_ballons_style(image, request):
         im_h, im_w = img_array.shape[:2]
         
         # 1. Détection des zones de texte (comme dans scripts/run_module.py)
-        detector = ballons_modules['detector']
+        detector = get_cached_module('detector')
+        if not detector:
+            return add_debug_info(image, "Détecteur non disponible")
         blk_list = []  # Liste vide initiale comme dans le code source
         
         print("🔍 Détection des zones de texte...")
@@ -324,13 +380,13 @@ async def translate_image_ballons_style(image, request):
         if not blk_list:
             return add_debug_info(image, "Aucune zone de texte détectée")
         
-        blk_list = filter_small_text_blocks(blk_list, min_area=400)
+        #blk_list = filter_small_text_blocks(blk_list, min_area=400)
         if not blk_list:
             return add_debug_info(image, "Aucune zone de texte après filtrage")
         
         # 2. OCR avec la vraie méthode interne (comme dans le code source)
         if 'ocr' in ballons_modules:
-            ocr = ballons_modules['ocr']
+            ocr = get_cached_module('ocr')
             print("📖 OCR avec méthode interne BallonsTranslator...")
             
             try:
@@ -341,9 +397,10 @@ async def translate_image_ballons_style(image, request):
                 print(f"❌ Erreur OCR interne: {e}")
         
         # 3. Traduction (comme dans le workflow BallonsTranslator)
-        if 'translator' in ballons_modules:
-            translator = ballons_modules['translator']
-            print("🌐 Traduction des TextBlocks...")
+        translator = get_cached_module('translator')
+        if 'translator' :
+            
+            print("Traduction des TextBlocks...")
             
             translated_count = 0
             for blk in blk_list:
@@ -362,7 +419,8 @@ async def translate_image_ballons_style(image, request):
             print(f"📝 {translated_count} blocs traduits")
         
         # 4. Inpainting et rendu final (comme dans BallonsTranslator)
-        if 'inpainter' in ballons_modules and any(blk.translation for blk in blk_list):
+        inpainter = get_cached_module('inpainter')
+        if inpainter and any(blk.translation for blk in blk_list):
             print("🖌️ Inpainting et rendu final...")
             return render_ballons_result(image, img_array, blk_list, mask)
         else:
