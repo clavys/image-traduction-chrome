@@ -273,6 +273,36 @@ async def translate_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erreur: {str(e)}")
 
+# Fonctions utilitaires pour le workflow BallonsTranslator width height et area ajustables
+def filter_small_text_blocks(blk_list, min_area=500):
+    """Filtrer les blocs de texte trop petits pour économiser du temps"""
+    if not blk_list:
+        return blk_list
+    
+    filtered_blocks = []
+    removed_count = 0
+    
+    for blk in blk_list:
+        if hasattr(blk, 'xyxy'):
+            x1, y1, x2, y2 = blk.xyxy
+            width = x2 - x1
+            height = y2 - y1
+            area = width * height
+            
+            # Filtrer par aire ET par dimensions minimum
+            if area >= min_area and width >= 20 and height >= 10:
+                filtered_blocks.append(blk)
+            else:
+                removed_count += 1
+                print(f"🚫 Zone ignorée: {width}x{height}px (aire: {area})")
+        else:
+            # Garder les blocs sans coordonnées (au cas où)
+            filtered_blocks.append(blk)
+    
+    print(f"📊 Filtrage: {len(blk_list)} -> {len(filtered_blocks)} zones ({removed_count} supprimées)")
+    return filtered_blocks
+
+
 # Fonction principale utilisant le workflow BallonsTranslator natif
 async def translate_image_ballons_style(image, request):
     """Utiliser le workflow exact de BallonsTranslator comme dans scripts/run_module.py"""
@@ -293,6 +323,10 @@ async def translate_image_ballons_style(image, request):
         
         if not blk_list:
             return add_debug_info(image, "Aucune zone de texte détectée")
+        
+        blk_list = filter_small_text_blocks(blk_list, min_area=400)
+        if not blk_list:
+            return add_debug_info(image, "Aucune zone de texte après filtrage")
         
         # 2. OCR avec la vraie méthode interne (comme dans le code source)
         if 'ocr' in ballons_modules:
