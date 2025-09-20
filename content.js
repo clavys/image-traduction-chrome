@@ -5,16 +5,12 @@ console.log('🚀 Manga Translator extension loaded');
 const API_BASE_URL = 'http://localhost:8000';
 const TRANSLATION_KEY = 'manga-translator-active';
 
-// 1. Cache des images converties
-const imageCache = new Map();
-const MAX_CACHE_SIZE = 15;
-
 // État de l'extension
 let isTranslationActive = false;
 let processedImages = new WeakSet();
-let autoTranslateEnabled = true; // ⭐ NOUVEAU: Auto-traduction activée
+let autoTranslateEnabled = true;
 
-// ⭐ NOUVEAU: Observer les changements de page (SPA, navigation AJAX)
+// Observer les changements de page (SPA, navigation AJAX)
 let currentUrl = window.location.href;
 
 // Styles CSS pour les overlays
@@ -90,7 +86,7 @@ function createControlButton() {
   button.addEventListener('click', toggleMode);
   document.body.appendChild(button);
   
-  // ⭐ NOUVEAU: Charger l'état et démarrer automatiquement
+  // Charger l'état et démarrer automatiquement
   chrome.storage.local.get([TRANSLATION_KEY, 'auto-translate'], (result) => {
     autoTranslateEnabled = result['auto-translate'] !== false; // Par défaut: true
     
@@ -101,7 +97,7 @@ function createControlButton() {
   });
 }
 
-// ⭐ NOUVEAU: Basculer entre les modes
+// Basculer entre les modes
 function toggleMode() {
   if (!isTranslationActive && !autoTranslateEnabled) {
     // OFF -> AUTO
@@ -126,7 +122,7 @@ function toggleMode() {
   });
 }
 
-// ⭐ NOUVEAU: Mettre à jour l'affichage du bouton
+// Mettre à jour l'affichage du bouton
 function updateButtonDisplay() {
   const button = document.getElementById('manga-translator-btn');
   if (!button) return;
@@ -143,7 +139,7 @@ function updateButtonDisplay() {
   }
 }
 
-// Activer/désactiver la traduction (fonction existante modifiée)
+// Activer/désactiver la traduction
 function toggleTranslation() {
   if (isTranslationActive) {
     deactivateTranslation();
@@ -160,8 +156,7 @@ function activateTranslation() {
   chrome.storage.local.set({[TRANSLATION_KEY]: true});
   
   // Scanner toutes les images
-  //scanForImages();
-  scanForImagesOptimized(); // Utiliser la version optimisée
+  scanForImagesOptimized();
 }
 
 function deactivateTranslation() {
@@ -175,7 +170,7 @@ function deactivateTranslation() {
   document.querySelectorAll('.manga-translator-overlay').forEach(el => el.remove());
 }
 
-// ⭐ NOUVEAU: Détecter les changements de page
+// Détecter les changements de page
 function detectPageChange() {
   // Observer les changements d'URL (pour les SPA comme React)
   const observer = new MutationObserver(() => {
@@ -211,7 +206,7 @@ function detectPageChange() {
   };
 }
 
-// ⭐ NOUVEAU: Actions à effectuer lors d'un changement de page
+// Actions à effectuer lors d'un changement de page
 function onPageChange() {
   console.log('📄 Page changed, checking translation settings...');
   
@@ -232,26 +227,11 @@ function onPageChange() {
       } else {
         scanForImagesOptimized();
       }
-    }, 1500); // Délai pour laisser la page se charger
+    }, 1500);
   }
 }
 
-// Scanner les images sur la page (fonction existante)
-function scanForImages() {
-  if (!isTranslationActive) return;
-  
-  const images = document.querySelectorAll('img');
-  console.log(`📸 Found ${images.length} images on page`);
-  
-  images.forEach((img, index) => {
-    if (!processedImages.has(img) && shouldTranslateImage(img)) {
-      processedImages.add(img);
-      setTimeout(() => processImageOptimized(img), index * 1000); // Étaler les requêtes
-    }
-  });
-}
-
-// ⭐ NOUVEAU: Observer les nouvelles images avec auto-traduction
+// Observer les nouvelles images avec auto-traduction
 function observeNewImages() {
   const observer = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
@@ -272,7 +252,7 @@ function observeNewImages() {
   });
 }
 
-// ⭐ NOUVEAU: Gérer une nouvelle image détectée
+// Gérer une nouvelle image détectée
 function handleNewImage(img) {
   if (processedImages.has(img) || !shouldTranslateImage(img)) {
     return;
@@ -289,7 +269,7 @@ function handleNewImage(img) {
   }
 }
 
-// Vérifier si une image doit être traduite (fonction existante)
+// Vérifier si une image doit être traduite
 function shouldTranslateImage(img) {
   const minWidth = 100;
   const minHeight = 100;
@@ -308,15 +288,12 @@ function shouldTranslateImage(img) {
   return true;
 }
 
-// [... Toutes les autres fonctions existantes restent identiques ...]
-// processImage, imageToBase64, createOverlay, etc.
-
-// ⭐ NOUVEAU: Initialisation modifiée
+// Initialisation
 function init() {
   injectStyles();
   createControlButton();
   observeNewImages();
-  detectPageChange(); // ⭐ NOUVEAU
+  detectPageChange();
   
   // Scanner les images après un délai pour laisser la page se charger
   setTimeout(() => {
@@ -339,70 +316,13 @@ if (document.readyState === 'loading') {
   init();
 }
 
-// Message depuis le popup (fonction existante)
+// Message depuis le popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'toggleTranslation') {
     toggleTranslation();
     sendResponse({active: isTranslationActive});
   }
 });
-
-// ⭐ NOUVEAU: Les fonctions manquantes (ajoutez-les si elles n'existent pas)
-
-// Traiter une image (version simplifiée - ajoutez votre fonction complète)
-async function processImage(img) {
-  try {
-    const overlay = createOverlay(img, 'Processing...', 'manga-translator-processing');
-    const base64Image = await imageToBase64Optimized(img);
-    
-    const response = await fetch(`${API_BASE_URL}/translate`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        image_base64: base64Image,
-        source_lang: 'ja',
-        target_lang: 'en',
-        translator: 'google'
-      })
-    });
-    
-    const result = await response.json();
-    
-    if (result.success) {
-      const newImg = new Image();
-      newImg.onload = () => {
-        img.src = newImg.src;
-        updateOverlay(overlay, 'Translated!', 'manga-translator-translated');
-        setTimeout(() => overlay.remove(), 2000);
-      };
-      newImg.src = `data:image/png;base64,${result.translated_image_base64}`;
-    } else {
-      updateOverlay(overlay, 'Error: ' + result.error, 'manga-translator-overlay');
-      setTimeout(() => overlay.remove(), 3000);
-    }
-  } catch (error) {
-    console.error('❌ Translation failed:', error);
-  }
-}
-
-// Convertir image en base64 (version simplifiée)
-async function imageToBase64(img) {
-  try {
-    const response = await chrome.runtime.sendMessage({
-      action: 'fetchImage',
-      url: img.src
-    });
-    
-    if (response && response.success) {
-      return response.base64;
-    } else {
-      throw new Error(response ? response.error : 'No response from background');
-    }
-  } catch (error) {
-    console.warn('Background fetch failed, using test image');
-    return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
-  }
-}
 
 // Créer un overlay sur l'image
 function createOverlay(img, text, className = 'manga-translator-overlay') {
@@ -423,87 +343,32 @@ function createOverlay(img, text, className = 'manga-translator-overlay') {
   return overlay;
 }
 
-
-
 // Mettre à jour un overlay
 function updateOverlay(overlay, text, className) {
   overlay.textContent = text;
   overlay.className = className;
 }
 
-// 2. Optimisation de la conversion base64 avec redimensionnement côté client
-async function imageToBase64Optimized(img) {
-    try {
-        // Clé de cache basée sur l'image
-        const cacheKey = img.src + '_' + img.naturalWidth + 'x' + img.naturalHeight;
-        
-        if (imageCache.has(cacheKey)) {
-            console.log('📦 Image trouvée en cache');
-            return imageCache.get(cacheKey);
-        }
-        
-        // Créer un canvas pour optimiser l'image
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        
-        // Calculer la taille optimale (côté client pour éviter le transfert de gros fichiers)
-        const maxSize = 800;
-        let targetWidth = img.naturalWidth;
-        let targetHeight = img.naturalHeight;
-        
-        if (Math.max(targetWidth, targetHeight) > maxSize) {
-            const ratio = Math.min(maxSize / targetWidth, maxSize / targetHeight);
-            targetWidth = Math.floor(targetWidth * ratio);
-            targetHeight = Math.floor(targetHeight * ratio);
-            console.log(`📏 Redimensionnement client: ${img.naturalWidth}x${img.naturalHeight} -> ${targetWidth}x${targetHeight}`);
-        }
-        
-        canvas.width = targetWidth;
-        canvas.height = targetHeight;
-        
-        // Dessiner l'image optimisée
-        ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-        
-        // Convertir en base64 avec compression JPEG (plus léger que PNG)
-        const base64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-        
-        // Gérer le cache (FIFO)
-        if (imageCache.size >= MAX_CACHE_SIZE) {
-            const firstKey = imageCache.keys().next().value;
-            imageCache.delete(firstKey);
-        }
-        imageCache.set(cacheKey, base64);
-        
-        console.log(`✅ Image optimisée: ${targetWidth}x${targetHeight}, taille: ${(base64.length * 0.75 / 1024).toFixed(0)}KB`);
-        return base64;
-        
-    } catch (error) {
-        console.warn('⚠️ Optimisation client échouée, fallback vers background:', error);
-        // Fallback vers la méthode background existante
-        return await imageToBase64Original(img);
+// Convertir image en base64
+async function imageToBase64(img) {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'fetchImage',
+      url: img.src
+    });
+    
+    if (response && response.success) {
+      return response.base64;
+    } else {
+      throw new Error(response ? response.error : 'No response from background');
     }
+  } catch (error) {
+    console.warn('Background fetch failed, using test image');
+    return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+  }
 }
 
-// 3. Méthode background en fallback (votre méthode actuelle)
-async function imageToBase64Original(img) {
-    try {
-        const response = await chrome.runtime.sendMessage({
-            action: 'fetchImage',
-            url: img.src
-        });
-        
-        if (response && response.success) {
-            return response.base64;
-        } else {
-            throw new Error(response ? response.error : 'No response from background');
-        }
-    } catch (error) {
-        console.warn('Background fetch failed, using test image');
-        return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
-    }
-}
-
-// 4. Filtrage plus intelligent des images
+// Filtrage intelligent des images
 function shouldTranslateImageOptimized(img) {
     // Critères plus stricts pour éviter les images inutiles
     const minWidth = 120;
@@ -556,10 +421,10 @@ function shouldTranslateImageOptimized(img) {
     return true;
 }
 
-// 5. Traitement avec timeout et gestion d'erreurs optimisée
+// Traitement avec timeout et gestion d'erreurs optimisée
 async function processImageOptimized(img) {
-    const maxRetries = 1; // Réduire les tentatives pour être plus rapide
-    const timeout = 12000; // Timeout plus court
+    const maxRetries = 1;
+    const timeout = 12000;
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
@@ -606,11 +471,11 @@ async function processImageOptimized(img) {
     }
 }
 
-// 6. Fonction de traduction avec settings cachés
+// Fonction de traduction avec settings en cache
 let cachedSettings = null;
 
 async function performTranslation(img) {
-    // Cache les settings pour éviter les appels répétés au storage
+    // Settings en cache pour éviter les appels répétés au storage
     if (!cachedSettings) {
         cachedSettings = await new Promise(resolve => {
             chrome.storage.local.get([
@@ -619,7 +484,7 @@ async function performTranslation(img) {
         });
     }
     
-    const base64Image = await imageToBase64Optimized(img);
+    const base64Image = await imageToBase64(img);
     const apiUrl = cachedSettings['api-url'] || 'http://localhost:8000';
     
     const response = await fetch(`${apiUrl}/translate`, {
@@ -640,7 +505,7 @@ async function performTranslation(img) {
     return await response.json();
 }
 
-// 7. Affichage plus fluide des résultats
+// Affichage plus fluide des résultats
 async function displayTranslatedImage(originalImg, result, overlay) {
     return new Promise((resolve) => {
         const newImg = new Image();
@@ -660,7 +525,7 @@ async function displayTranslatedImage(originalImg, result, overlay) {
                         overlay.remove();
                     }
                     resolve();
-                }, 1500); // Affichage plus court du succès
+                }, 1500);
             }, 200);
         };
         
@@ -678,7 +543,7 @@ async function displayTranslatedImage(originalImg, result, overlay) {
     });
 }
 
-// 8. Scan optimisé avec limitation
+// Scan optimisé avec limitation
 let scanInProgress = false;
 let lastScanTime = 0;
 
@@ -731,14 +596,10 @@ function scanForImagesOptimized() {
     processNext();
 }
 
-// 9. Invalidation du cache des settings quand ils changent
+// Invalidation du cache des settings quand ils changent
 chrome.storage.onChanged.addListener((changes) => {
     if (changes['api-url'] || changes['source-lang'] || changes['target-lang']) {
         cachedSettings = null; // Forcer le rechargement
         console.log('⚙️ Settings cache invalidé');
     }
 });
-
-const originalImageToBase64 = imageToBase64;
-const originalScanForImages = scanForImages; 
-const originalProcessImage = processImage;
