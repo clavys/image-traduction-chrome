@@ -9,15 +9,59 @@ from PIL import Image, ImageDraw, ImageFont
 import uvicorn
 import time
 import numpy as np
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-import threading
 
-thread_pools = {
-    'ocr': ThreadPoolExecutor(max_workers=8, thread_name_prefix="OCR"),
-    'translation': ThreadPoolExecutor(max_workers=4, thread_name_prefix="TRANSLATE"),
-    'inpaint': ThreadPoolExecutor(max_workers=2, thread_name_prefix="INPAINT") 
-}
+class ModuleCache:
+    """Cache pour éviter de réinitialiser les modules à chaque requête"""
+    def __init__(self):
+        self._cached_modules = {}
+        self._initialization_times = {}
+        self.cache_hits = 0
+        self.cache_misses = 0
+    
+    def get_module(self, module_name):
+        """Récupérer un module du cache"""
+        if module_name in self._cached_modules:
+            self.cache_hits += 1
+            print(f"Cache HIT pour {module_name} (hits: {self.cache_hits})")
+            return self._cached_modules[module_name]
+        
+        self.cache_misses += 1
+        print(f"Cache MISS pour {module_name} (misses: {self.cache_misses})")
+        return None
+    
+    def set_module(self, module_name, module_instance, init_time=0):
+        """Mettre un module en cache"""
+        self._cached_modules[module_name] = module_instance
+        self._initialization_times[module_name] = init_time
+        print(f"Module {module_name} mis en cache (init: {init_time:.2f}s)")
+    
+    def get_stats(self):
+        """Statistiques du cache"""
+        return {
+            'cached_modules': list(self._cached_modules.keys()),
+            'cache_hits': self.cache_hits,
+            'cache_misses': self.cache_misses,
+            'hit_ratio': self.cache_hits / max(1, self.cache_hits + self.cache_misses)
+        }
+    
+module_cache = ModuleCache()
+
+# Fonction helper pour obtenir les modules avec cache
+def get_cached_module(module_name):
+    """Obtenir un module depuis le cache ou ballons_modules"""
+    # Essayer le cache d'abord
+    cached_module = module_cache.get_module(module_name)
+    if cached_module:
+        return cached_module
+    
+    # Fallback vers ballons_modules si pas en cache
+    if module_name in ballons_modules:
+        module_instance = ballons_modules[module_name]
+        module_cache.set_module(module_name, module_instance)
+        return module_instance
+    
+    print(f"Module {module_name} non disponible")
+    return None
 
 # Ajouter le chemin vers BallonsTranslator
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +70,7 @@ sys.path.insert(0, current_dir)
 # État des modules BallonsTranslator
 translator_ready = False
 ballons_modules = {}
+
 
 # Import des modules BallonsTranslator
 try:
@@ -205,8 +250,25 @@ async def translate_image(request: TranslationRequest):
             
             if image.mode != 'RGB':
                 image = image.convert('RGB')
+
+
+            #  NOUVELLE OPTIMISATION : Redimensionner si trop grande
+            original_size = (image.width, image.height)
+            max_size = 1024  # Taille maximum pour le traitement
+            
+            if max(image.width, image.height) > max_size:
+                # Calculer le ratio pour garder les proportions
+                ratio = min(max_size / image.width, max_size / image.height)
+                new_width = int(image.width * ratio)
+                new_height = int(image.height * ratio)
                 
-            print(f"📸 Image reçue: {image.width}x{image.height}, mode: {image.mode}")
+                print(f"📏 Redimensionnement: {original_size} -> ({new_width}, {new_height})")
+                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            else:
+                print(f"📏 Taille OK: {original_size}")
+                
+            print(f"📸 Image traitée: {image.width}x{image.height}, mode: {image.mode}")
+                
                 
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Image invalide: {str(e)}")
@@ -265,6 +327,36 @@ async def translate_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erreur: {str(e)}")
 
+# Fonctions utilitaires pour le workflow BallonsTranslator width height et area ajustables
+def filter_small_text_blocks(blk_list, min_area=500):
+    """Filtrer les blocs de texte trop petits pour économiser du temps"""
+    if not blk_list:
+        return blk_list
+    
+    filtered_blocks = []
+    removed_count = 0
+    
+    for blk in blk_list:
+        if hasattr(blk, 'xyxy'):
+            x1, y1, x2, y2 = blk.xyxy
+            width = x2 - x1
+            height = y2 - y1
+            area = width * height
+            
+            # Filtrer par aire ET par dimensions minimum
+            if area >= min_area and width >= 20 and height >= 10:
+                filtered_blocks.append(blk)
+            else:
+                removed_count += 1
+                print(f"🚫 Zone ignorée: {width}x{height}px (aire: {area})")
+        else:
+            # Garder les blocs sans coordonnées (au cas où)
+            filtered_blocks.append(blk)
+    
+    print(f"📊 Filtrage: {len(blk_list)} -> {len(filtered_blocks)} zones ({removed_count} supprimées)")
+    return filtered_blocks
+
+
 # Fonction principale utilisant le workflow BallonsTranslator natif
 async def translate_image_ballons_style(image, request):
     """Utiliser le workflow exact de BallonsTranslator comme dans scripts/run_module.py"""
@@ -276,7 +368,9 @@ async def translate_image_ballons_style(image, request):
         im_h, im_w = img_array.shape[:2]
         
         # 1. Détection des zones de texte (comme dans scripts/run_module.py)
-        detector = ballons_modules['detector']
+        detector = get_cached_module('detector')
+        if not detector:
+            return add_debug_info(image, "Détecteur non disponible")
         blk_list = []  # Liste vide initiale comme dans le code source
         
         print("🔍 Détection des zones de texte...")
@@ -286,45 +380,27 @@ async def translate_image_ballons_style(image, request):
         if not blk_list:
             return add_debug_info(image, "Aucune zone de texte détectée")
         
+        #blk_list = filter_small_text_blocks(blk_list, min_area=400)
+        if not blk_list:
+            return add_debug_info(image, "Aucune zone de texte après filtrage")
+        
         # 2. OCR avec la vraie méthode interne (comme dans le code source)
         if 'ocr' in ballons_modules:
-            print("OCR multi-threadé avec _ocr_blk_list...")
+            ocr = get_cached_module('ocr')
+            print("📖 OCR avec méthode interne BallonsTranslator...")
             
-            # Préparer les tâches
-            loop = asyncio.get_event_loop()
-            tasks = []
-            
-            for i, blk in enumerate(blk_list):
-                if hasattr(blk, 'xyxy'):
-                    task = loop.run_in_executor(
-                        thread_pools['ocr'],
-                        ocr_single_block_with_ballons,
-                        img_array, blk, i
-                    )
-                    tasks.append(task)
-            
-            # Exécuter en parallèle
-            if tasks:
-                print(f"Lancement de {len(tasks)} threads OCR...")
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                # Appliquer les résultats
-                success_count = 0
-                for result in results:
-                    if not isinstance(result, Exception):
-                        blk_index, text = result
-                        if blk_index < len(blk_list) and text:
-                            blk_list[blk_index].text = [text]
-                            success_count += 1
-                            print(f"OCR thread {blk_index}: '{text}'")
-                
-                print(f"OCR terminé: {success_count}/{len(tasks)} réussis")
+            try:
+                if hasattr(ocr, '_ocr_blk_list'):
+                    ocr._ocr_blk_list(img_array, blk_list)
+   
+            except Exception as e:
+                print(f"❌ Erreur OCR interne: {e}")
         
-
         # 3. Traduction (comme dans le workflow BallonsTranslator)
-        if 'translator' in ballons_modules:
-            translator = ballons_modules['translator']
-            print("🌐 Traduction des TextBlocks...")
+        translator = get_cached_module('translator')
+        if 'translator' :
+            
+            print("Traduction des TextBlocks...")
             
             translated_count = 0
             for blk in blk_list:
@@ -343,7 +419,8 @@ async def translate_image_ballons_style(image, request):
             print(f"📝 {translated_count} blocs traduits")
         
         # 4. Inpainting et rendu final (comme dans BallonsTranslator)
-        if 'inpainter' in ballons_modules and any(blk.translation for blk in blk_list):
+        inpainter = get_cached_module('inpainter')
+        if inpainter and any(blk.translation for blk in blk_list):
             print("🖌️ Inpainting et rendu final...")
             return render_ballons_result(image, img_array, blk_list, mask)
         else:
@@ -463,30 +540,7 @@ def wrap_text(text, font, max_width, draw):
         lines.append(current_line)
     return lines
 
-"""multi-threading OCR"""
-def ocr_single_block_with_ballons(img_array, blk, blk_index):
-    """OCR d'un bloc avec la méthode BallonsTranslator"""
-    try:
-        # Créer une liste temporaire avec juste ce bloc
-        temp_blk_list = [blk]
-        
-        ocr = ballons_modules['ocr']
-        if hasattr(ocr, '_ocr_blk_list'):
-            print(f"    Thread {blk_index}: Utilisation de _ocr_blk_list")
-            ocr._ocr_blk_list(img_array, temp_blk_list)
-            
-            # Récupérer le texte du bloc traité
-            if temp_blk_list and hasattr(temp_blk_list[0], 'text'):
-                text = temp_blk_list[0].text
-                if isinstance(text, list):
-                    text = " ".join(text) if text else ""
-                return blk_index, str(text).strip()
-        
-        return blk_index, ""
-        
-    except Exception as e:
-        print(f"Erreur OCR thread {blk_index}: {e}")
-        return blk_index, ""
+
 
 def add_debug_info(image, message):
     """Debug avec BallonsTranslator"""
