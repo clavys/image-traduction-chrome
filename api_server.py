@@ -357,80 +357,176 @@ def filter_small_text_blocks(blk_list, min_area=500):
     return filtered_blocks
 
 
-# Fonction principale utilisant le workflow BallonsTranslator natif
-async def translate_image_ballons_style(image, request):
-    """Utiliser le workflow exact de BallonsTranslator comme dans scripts/run_module.py"""
+# Fonction pour la traduction par batch
+def batch_translate_texts(translator, texts, target_lang, max_batch_size=5):
+    """Traduire plusieurs textes en une seule requête"""
+    if not texts or len(texts) == 0:
+        return []
+    
+    if len(texts) == 1:
+        # Un seul texte, traduction normale
+        try:
+            return [translator.translate(texts[0], target_language=target_lang)]
+        except Exception as e:
+            print(f"Erreur traduction unique: {e}")
+            return [f"[ERREUR] {texts[0]}"]
+    
+    # Plusieurs textes, essayer le batch
+    if len(texts) <= max_batch_size:
+        try:
+            # Combiner les textes avec des séparateurs uniques
+            separator = "|||SEPARATOR|||"
+            combined_text = separator.join(f"[{i}] {text}" for i, text in enumerate(texts))
+            
+            # Vérifier que ce n'est pas trop long
+            if len(combined_text) > 4000:  # Limite de sécurité
+                print("Texte combiné trop long, traduction individuelle")
+                return translate_individually(translator, texts, target_lang)
+            
+            print(f"Traduction batch de {len(texts)} textes...")
+            batch_result = translator.translate(combined_text, target_language=target_lang)
+            
+            # Parser le résultat
+            parsed_results = parse_batch_result(batch_result, separator, len(texts))
+            
+            if len(parsed_results) == len(texts):
+                print(f"Batch réussi: {len(parsed_results)} traductions")
+                return parsed_results
+            else:
+                print("Parsing batch échoué, fallback individuel")
+                return translate_individually(translator, texts, target_lang)
+                
+        except Exception as e:
+            print(f"Erreur batch: {e}, fallback individuel")
+            return translate_individually(translator, texts, target_lang)
+    else:
+        # Trop de textes, traduction individuelle
+        return translate_individually(translator, texts, target_lang)
+
+def parse_batch_result(batch_result, separator, expected_count):
+    """Parser le résultat de traduction batch"""
     try:
-        print("🔄 Workflow BallonsTranslator natif")
+        # Séparer par le séparateur
+        parts = batch_result.split(separator)
         
-        # Conversion PIL -> numpy
+        results = []
+        for part in parts:
+            # Enlever le préfixe [0], [1], etc.
+            import re
+            cleaned = re.sub(r'^\[\d+\]\s*', '', part.strip())
+            if cleaned:
+                results.append(cleaned)
+        
+        return results[:expected_count]  # Limiter au nombre attendu
+        
+    except Exception as e:
+        print(f"Erreur parsing batch: {e}")
+        return []
+
+def translate_individually(translator, texts, target_lang):
+    """Fallback: traduction individuelle"""
+    results = []
+    for text in texts:
+        try:
+            translation = translator.translate(text, target_language=target_lang)
+            results.append(translation)
+        except Exception as e:
+            print(f"Erreur traduction '{text}': {e}")
+            results.append(f"[ERREUR] {text}")
+    return results
+
+# Modifier la fonction translate_image_ballons_style
+async def translate_image_ballons_style(image, request):
+    """Workflow BallonsTranslator avec traduction par batch optimisée"""
+    try:
+        print("Workflow BallonsTranslator avec batch translation")
+        
         img_array = np.array(image)
         im_h, im_w = img_array.shape[:2]
         
-        # 1. Détection des zones de texte (comme dans scripts/run_module.py)
+        # 1. Détection
         detector = get_cached_module('detector')
         if not detector:
             return add_debug_info(image, "Détecteur non disponible")
-        blk_list = []  # Liste vide initiale comme dans le code source
         
-        print("🔍 Détection des zones de texte...")
+        blk_list = []
+        print("Détection des zones de texte...")
+        detection_start = time.time()
         mask, blk_list = detector.detect(img_array, blk_list)
-        print(f"📍 {len(blk_list)} TextBlocks détectés")
+        detection_time = time.time() - detection_start
+        print(f"{len(blk_list)} TextBlocks détectés en {detection_time:.2f}s")
         
         if not blk_list:
             return add_debug_info(image, "Aucune zone de texte détectée")
         
-        #blk_list = filter_small_text_blocks(blk_list, min_area=400)
-        if not blk_list:
-            return add_debug_info(image, "Aucune zone de texte après filtrage")
-        
-        # 2. OCR avec la vraie méthode interne (comme dans le code source)
-        if 'ocr' in ballons_modules:
-            ocr = get_cached_module('ocr')
-            print("📖 OCR avec méthode interne BallonsTranslator...")
-            
+        # 2. OCR
+        ocr = get_cached_module('ocr')
+        if ocr:
+            ocr_start = time.time()
             try:
                 if hasattr(ocr, '_ocr_blk_list'):
                     ocr._ocr_blk_list(img_array, blk_list)
-   
+                ocr_time = time.time() - ocr_start
+                print(f"OCR terminé en {ocr_time:.2f}s")
             except Exception as e:
-                print(f"❌ Erreur OCR interne: {e}")
+                print(f"Erreur OCR: {e}")
         
-        # 3. Traduction (comme dans le workflow BallonsTranslator)
+        # 3. TRADUCTION PAR BATCH
         translator = get_cached_module('translator')
-        if 'translator' :
+        if translator:
+            translation_start = time.time()
             
-            print("Traduction des TextBlocks...")
+            # Collecter tous les textes à traduire
+            texts_to_translate = []
+            text_indices = []  # Pour mapper les résultats aux blocs
             
-            translated_count = 0
-            for blk in blk_list:
+            for i, blk in enumerate(blk_list):
                 text = blk.get_text()
                 if text and text.strip():
-                    try:
-                        # Utiliser l'API du traducteur BallonsTranslator
-                        translation = translator.translate(text, target_language=request.target_lang)
-                        blk.translation = translation
-                        translated_count += 1
-                        print(f"🔄 '{text}' -> '{translation}'")
-                    except Exception as e:
-                        print(f"⚠️ Erreur traduction: {e}")
-                        blk.translation = f"[ERREUR] {text}"
+                    texts_to_translate.append(text.strip())
+                    text_indices.append(i)
             
-            print(f"📝 {translated_count} blocs traduits")
+            if texts_to_translate:
+                print(f"Traduction batch de {len(texts_to_translate)} textes...")
+                
+                # Traduction par batch
+                translated_texts = batch_translate_texts(
+                    translator, 
+                    texts_to_translate, 
+                    request.target_lang,
+                    max_batch_size=8  # Ajustable selon les performances
+                )
+                
+                # Assigner les traductions aux blocs
+                for idx, translated_text in enumerate(translated_texts):
+                    if idx < len(text_indices):
+                        blk_idx = text_indices[idx]
+                        original_text = texts_to_translate[idx]
+                        blk_list[blk_idx].translation = translated_text
+                        print(f"'{original_text}' -> '{translated_text}'")
+                
+                translation_time = time.time() - translation_start
+                print(f"{len(translated_texts)} textes traduits en {translation_time:.2f}s")
+            else:
+                print("Aucun texte à traduire")
         
-        # 4. Inpainting et rendu final (comme dans BallonsTranslator)
+        # 4. Rendu final
         inpainter = get_cached_module('inpainter')
-        if inpainter and any(blk.translation for blk in blk_list):
-            print("🖌️ Inpainting et rendu final...")
-            return render_ballons_result(image, img_array, blk_list, mask)
+        if inpainter and any(hasattr(blk, 'translation') and blk.translation for blk in blk_list):
+            print("Rendu final...")
+            render_start = time.time()
+            result = render_ballons_result(image, img_array, blk_list, mask)
+            render_time = time.time() - render_start
+            print(f"Rendu terminé en {render_time:.2f}s")
+            return result
         else:
             return render_ballons_overlay(image, blk_list)
         
     except Exception as e:
-        print(f"❌ Erreur workflow BallonsTranslator: {e}")
+        print(f"Erreur workflow: {e}")
         import traceback
         traceback.print_exc()
-        return add_debug_info(image, f"Erreur workflow: {str(e)}")
+        return add_debug_info(image, f"Erreur: {str(e)}")
 
 def get_font(size=18):
     """Police pour le rendu avec meilleure lisibilité"""
