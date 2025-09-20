@@ -64,6 +64,242 @@ const CSS_STYLES = `
   }
 `;
 
+const NETWORK_CONFIG = {
+    keepAlive: true,
+    timeout: 15000,
+    retryDelay: 1000,
+    maxRetries: 2
+};
+
+// Pool de connexions pour réutiliser les connexions HTTP
+class ConnectionPool {
+    constructor() {
+        this.activeConnections = new Map();
+        this.connectionStats = {
+            created: 0,
+            reused: 0,
+            failed: 0
+        };
+    }
+    
+    getConnection(apiUrl) {
+        // Simuler la réutilisation de connexion via AbortController
+        const connectionKey = new URL(apiUrl).origin;
+        
+        if (!this.activeConnections.has(connectionKey)) {
+            const controller = new AbortController();
+            this.activeConnections.set(connectionKey, controller);
+            this.connectionStats.created++;
+            console.log(`🔗 Nouvelle connexion créée pour ${connectionKey}`);
+        } else {
+            this.connectionStats.reused++;
+            console.log(`♻️ Connexion réutilisée pour ${connectionKey}`);
+        }
+        
+        return this.activeConnections.get(connectionKey);
+    }
+    
+    getStats() {
+        return this.connectionStats;
+    }
+}
+
+// Instance globale du pool
+const connectionPool = new ConnectionPool();
+
+// Headers optimisés pour la performance
+const OPTIMIZED_HEADERS = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'Connection': 'keep-alive',
+    'Accept-Encoding': 'gzip, deflate',
+    'Cache-Control': 'no-cache'
+};
+
+// Fonction de requête optimisée avec keep-alive et retry
+async function makeOptimizedRequest(apiUrl, requestData, options = {}) {
+    const {
+        timeout = NETWORK_CONFIG.timeout,
+        maxRetries = NETWORK_CONFIG.maxRetries,
+        retryDelay = NETWORK_CONFIG.retryDelay
+    } = options;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`🌐 Requête tentative ${attempt}/${maxRetries}`);
+            
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+            
+            const startTime = performance.now();
+            
+            // Headers simplifiés (compatible)
+            const response = await fetch(`${apiUrl}/translate`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestData),
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            const networkTime = performance.now() - startTime;
+            console.log(`⚡ Requête réseau: ${networkTime.toFixed(0)}ms`);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            const result = await response.json();
+            
+            const totalTime = performance.now() - startTime;
+            console.log(`📊 Temps total requête: ${totalTime.toFixed(0)}ms`);
+            
+            return {
+                success: true,
+                data: result,
+                networkTime: networkTime,
+                totalTime: totalTime,
+                attempt: attempt
+            };
+            
+        } catch (error) {
+            console.warn(`❌ Tentative ${attempt} échouée:`, error.message);
+            
+            if (attempt === maxRetries) {
+                throw new Error(`Échec après ${maxRetries} tentatives: ${error.message}`);
+            }
+            
+            const delay = retryDelay * Math.pow(2, attempt - 1);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+    }
+}
+
+// Version optimisée de performTranslation
+async function performTranslationOptimized(img) {
+    try {
+        // Cache les settings pour éviter les appels répétés au storage
+        if (!cachedSettings) {
+            cachedSettings = await new Promise(resolve => {
+                chrome.storage.local.get([
+                    'api-url', 'source-lang', 'target-lang'
+                ], resolve);
+            });
+        }
+        
+        const base64Image = await imageToBase64(img);
+        const apiUrl = cachedSettings['api-url'] || 'http://localhost:8000';
+        
+        const requestData = {
+            image_base64: base64Image,
+            source_lang: cachedSettings['source-lang'] || 'ja',
+            target_lang: cachedSettings['target-lang'] || 'en',
+            translator: 'google'
+        };
+        
+        // Utiliser la requête optimisée
+        const result = await makeOptimizedRequest(apiUrl, requestData, {
+            timeout: 15000,
+            maxRetries: 2
+        });
+        
+        console.log(`🚀 Requête réussie en ${result.totalTime.toFixed(0)}ms (tentative ${result.attempt})`);
+        
+        return result.data;
+        
+    } catch (error) {
+        console.error('Erreur requête optimisée:', error);
+        throw error;
+    }
+}
+
+// Fonction pour précharger les connexions (optionnel)
+async function warmupConnections() {
+    try {
+        if (!cachedSettings) {
+            cachedSettings = await new Promise(resolve => {
+                chrome.storage.local.get(['api-url'], resolve);
+            });
+        }
+        
+        const apiUrl = cachedSettings['api-url'] || 'http://localhost:8000';
+        
+        // Faire une requête de test pour établir la connexion
+        console.log('🔥 Préchauffage de la connexion...');
+        
+        const response = await fetch(`${apiUrl}/health`, {
+            method: 'GET',
+            headers: {
+                'Connection': 'keep-alive'
+            },
+            keepalive: true
+        });
+        
+        if (response.ok) {
+            console.log('✅ Connexion préchauffée');
+        }
+        
+    } catch (error) {
+        console.log('⚠️ Préchauffage échoué:', error.message);
+    }
+}
+
+// Monitorer les performances réseau
+class NetworkMonitor {
+    constructor() {
+        this.stats = {
+            requests: 0,
+            totalTime: 0,
+            errors: 0,
+            avgTime: 0,
+            minTime: Infinity,
+            maxTime: 0
+        };
+    }
+    
+    recordRequest(time, success = true) {
+        this.stats.requests++;
+        
+        if (success) {
+            this.stats.totalTime += time;
+            this.stats.avgTime = this.stats.totalTime / this.stats.requests;
+            this.stats.minTime = Math.min(this.stats.minTime, time);
+            this.stats.maxTime = Math.max(this.stats.maxTime, time);
+        } else {
+            this.stats.errors++;
+        }
+    }
+    
+    getStats() {
+        return {
+            ...this.stats,
+            successRate: ((this.stats.requests - this.stats.errors) / this.stats.requests * 100).toFixed(1),
+            connectionPool: connectionPool.getStats()
+        };
+    }
+    
+    reset() {
+        this.stats = {
+            requests: 0,
+            totalTime: 0,
+            errors: 0,
+            avgTime: 0,
+            minTime: Infinity,
+            maxTime: 0
+        };
+    }
+}
+
+const networkMonitor = new NetworkMonitor();
+
+
+
+// Préchauffer les connexions au démarrage
+setTimeout(warmupConnections, 1000);
+
 // Ajouter les styles CSS
 function injectStyles() {
   if (document.getElementById('manga-translator-styles')) return;
@@ -73,6 +309,14 @@ function injectStyles() {
   styleSheet.textContent = CSS_STYLES;
   document.head.appendChild(styleSheet);
 }
+
+// Interface de debug
+window.mangaTranslatorNetwork = {
+    getStats: () => networkMonitor.getStats(),
+    resetStats: () => networkMonitor.reset(),
+    warmup: warmupConnections,
+    poolStats: () => connectionPool.getStats()
+};
 
 // Créer le bouton de contrôle
 function createControlButton() {
@@ -434,7 +678,7 @@ async function processImageOptimized(img) {
             
             // Début du traitement avec timeout
             const startTime = Date.now();
-            const translationPromise = performTranslation(img);
+            const translationPromise = performTranslationOptimized(img);
             const timeoutPromise = new Promise((_, reject) => 
                 setTimeout(() => reject(new Error('Timeout')), timeout)
             );
@@ -474,6 +718,7 @@ async function processImageOptimized(img) {
 // Fonction de traduction avec settings en cache
 let cachedSettings = null;
 
+/*
 async function performTranslation(img) {
     // Settings en cache pour éviter les appels répétés au storage
     if (!cachedSettings) {
@@ -504,7 +749,7 @@ async function performTranslation(img) {
     
     return await response.json();
 }
-
+*/
 // Affichage plus fluide des résultats
 async function displayTranslatedImage(originalImg, result, overlay) {
     return new Promise((resolve) => {
