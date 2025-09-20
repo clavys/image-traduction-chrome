@@ -528,11 +528,30 @@ async def translate_image_ballons_style(image, request):
         traceback.print_exc()
         return add_debug_info(image, f"Erreur: {str(e)}")
 
-def get_font(size=18):
-    """Police pour le rendu avec meilleure lisibilité"""
+def get_font(size=18, bubble_width=None, bubble_height=None, text_length=None):
+    """Police avec taille adaptative simple"""
+    
+    if bubble_width and bubble_height:
+        # Taille basée sur la plus petite dimension de la bulle
+        min_dimension = min(bubble_width, bubble_height)
+        
+        if min_dimension > 150:
+            font_size = 20
+        elif min_dimension > 100:
+            font_size = 16
+        elif min_dimension > 60:
+            font_size = 14
+        else:
+            font_size = 12
+        
+        # Réduire légèrement si le texte est très long
+        if text_length and text_length > 30:
+            font_size = max(10, font_size - 2)
+    else:
+        font_size = size
+    
     try:
-        # Essayer DejaVuSans-Bold, souvent présente avec Pillow
-        return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
+        return ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
     except:
         try:
             return ImageFont.load_default()
@@ -565,15 +584,18 @@ def render_ballons_result(original_image, img_array, blk_list, mask):
             result_image = original_image.copy()
 
         draw = ImageDraw.Draw(result_image)
-        font = get_font(18)
-        ascent, descent = font.getmetrics()
-        line_spacing = ascent + descent + 2
 
         for blk in blk_list:
             if blk.translation and hasattr(blk, 'xyxy'):
                 x1, y1, x2, y2 = map(int, blk.xyxy)
                 max_width = x2 - x1
                 max_height = y2 - y1
+                
+                # Font adaptative pour chaque bulle
+                font = get_font(18, max_width, max_height, len(blk.translation))
+                ascent, descent = font.getmetrics()
+                line_spacing = ascent + descent + 2
+                
                 lines = wrap_text(blk.translation, font, max_width, draw)
                 total_height = len(lines) * line_spacing
                 y_text = y1 + (max_height - total_height) // 2
@@ -583,9 +605,7 @@ def render_ballons_result(original_image, img_array, blk_list, mask):
                     x_text = x1 + (max_width - w) // 2
                     draw_text_with_outline(draw, (x_text, y_text), line, font)
                     y_text += line_spacing
-
-        draw_text_with_outline(draw, (10, original_image.height - 25),
-                               "🎯 BALLONS TRANSLATOR - WORKFLOW NATIF", font, fill="green", outline="black", stroke_width=2)
+                    
         return result_image
 
     except Exception as e:
