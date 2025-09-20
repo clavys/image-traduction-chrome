@@ -1,4 +1,4 @@
-// content.js - Script injecté dans chaque page web
+// content.js - Script injecté dans chaque page web - Version optimisée pour images multiples
 console.log('🚀 Manga Translator extension loaded');
 
 // Configuration
@@ -12,6 +12,98 @@ let autoTranslateEnabled = true;
 
 // Observer les changements de page (SPA, navigation AJAX)
 let currentUrl = window.location.href;
+
+// NOUVELLE GESTION DE FILE D'ATTENTE SÉQUENTIELLE
+class TranslationQueue {
+    constructor() {
+        this.queue = [];
+        this.processing = false;
+        this.maxConcurrent = 1; // UNE SEULE REQUÊTE À LA FOIS
+        this.currentRequests = 0;
+        this.stats = {
+            processed: 0,
+            succeeded: 0,
+            failed: 0
+        };
+    }
+    
+    add(img) {
+        if (this.queue.some(item => item.img === img)) {
+            console.log('🔄 Image déjà en file d\'attente');
+            return;
+        }
+        
+        this.queue.push({
+            img: img,
+            timestamp: Date.now(),
+            attempts: 0
+        });
+        
+        console.log(`➕ Ajouté en file: ${this.queue.length} images en attente`);
+        this.processNext();
+    }
+    
+    async processNext() {
+        if (this.processing || this.currentRequests >= this.maxConcurrent || this.queue.length === 0) {
+            return;
+        }
+        
+        this.processing = true;
+        this.currentRequests++;
+        
+        const item = this.queue.shift();
+        console.log(`⚙️ Traitement de la file: ${this.queue.length} restantes`);
+        
+        try {
+            await this.processItem(item);
+            this.stats.succeeded++;
+        } catch (error) {
+            console.error('❌ Erreur traitement file:', error);
+            this.stats.failed++;
+            
+            // Retry logic
+            if (item.attempts < 1) { // Max 1 retry
+                item.attempts++;
+                this.queue.unshift(item); // Remettre au début
+                console.log('🔄 Retry ajouté en file');
+            }
+        } finally {
+            this.currentRequests--;
+            this.processing = false;
+            
+            // Délai entre les traitements pour éviter la surcharge
+            setTimeout(() => {
+                this.processNext();
+            }, 1500); // 1.5 secondes entre chaque image
+        }
+    }
+    
+    async processItem(item) {
+        const { img } = item;
+        
+        if (!img || !img.parentNode) {
+            throw new Error('Image non valide ou supprimée du DOM');
+        }
+        
+        await processImageSequential(img);
+        this.stats.processed++;
+    }
+    
+    clear() {
+        this.queue = [];
+        console.log('🧹 File d\'attente vidée');
+    }
+    
+    getStats() {
+        return {
+            ...this.stats,
+            queueLength: this.queue.length,
+            processing: this.processing
+        };
+    }
+}
+
+const translationQueue = new TranslationQueue();
 
 // Styles CSS pour les overlays
 const CSS_STYLES = `
@@ -34,6 +126,10 @@ const CSS_STYLES = `
   
   .manga-translator-translated {
     background: rgba(0, 128, 0, 0.8);
+  }
+  
+  .manga-translator-queued {
+    background: rgba(128, 0, 128, 0.8);
   }
   
   .manga-translator-button {
@@ -64,124 +160,71 @@ const CSS_STYLES = `
   }
 `;
 
+// CONFIGURATION RÉSEAU SIMPLIFIÉE
 const NETWORK_CONFIG = {
-    keepAlive: true,
-    timeout: 15000,
-    retryDelay: 1000,
-    maxRetries: 2
+    timeout: 25000, // Timeout plus long
+    retryDelay: 2000,
+    maxRetries: 1 // Moins de retries
 };
 
-// Pool de connexions pour réutiliser les connexions HTTP
-class ConnectionPool {
-    constructor() {
-        this.activeConnections = new Map();
-        this.connectionStats = {
-            created: 0,
-            reused: 0,
-            failed: 0
-        };
+// Gestionnaire de requêtes simplifié (UNE SEULE À LA FOIS)
+let currentController = null;
+
+async function makeSequentialRequest(apiUrl, requestData) {
+    // Annuler la requête précédente s'il y en a une
+    if (currentController) {
+        currentController.abort();
+        console.log('🛑 Requête précédente annulée');
     }
     
-    getConnection(apiUrl) {
-        // Simuler la réutilisation de connexion via AbortController
-        const connectionKey = new URL(apiUrl).origin;
-        
-        if (!this.activeConnections.has(connectionKey)) {
-            const controller = new AbortController();
-            this.activeConnections.set(connectionKey, controller);
-            this.connectionStats.created++;
-            console.log(`🔗 Nouvelle connexion créée pour ${connectionKey}`);
-        } else {
-            this.connectionStats.reused++;
-            console.log(`♻️ Connexion réutilisée pour ${connectionKey}`);
-        }
-        
-        return this.activeConnections.get(connectionKey);
-    }
+    currentController = new AbortController();
+    const startTime = performance.now();
     
-    getStats() {
-        return this.connectionStats;
-    }
-}
-
-// Instance globale du pool
-const connectionPool = new ConnectionPool();
-
-// Headers optimisés pour la performance
-const OPTIMIZED_HEADERS = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-    'Connection': 'keep-alive',
-    'Accept-Encoding': 'gzip, deflate',
-    'Cache-Control': 'no-cache'
-};
-
-// Fonction de requête optimisée avec keep-alive et retry
-async function makeOptimizedRequest(apiUrl, requestData, options = {}) {
-    const {
-        timeout = NETWORK_CONFIG.timeout,
-        maxRetries = NETWORK_CONFIG.maxRetries,
-        retryDelay = NETWORK_CONFIG.retryDelay
-    } = options;
-    
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            console.log(`🌐 Requête tentative ${attempt}/${maxRetries}`);
-            
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), timeout);
-            
-            const startTime = performance.now();
-            
-            // Headers simplifiés (compatible)
-            const response = await fetch(`${apiUrl}/translate`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(requestData),
-                signal: controller.signal
-            });
-            
-            clearTimeout(timeoutId);
-            
-            const networkTime = performance.now() - startTime;
-            console.log(`⚡ Requête réseau: ${networkTime.toFixed(0)}ms`);
-            
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            
-            const result = await response.json();
-            
-            const totalTime = performance.now() - startTime;
-            console.log(`📊 Temps total requête: ${totalTime.toFixed(0)}ms`);
-            
-            return {
-                success: true,
-                data: result,
-                networkTime: networkTime,
-                totalTime: totalTime,
-                attempt: attempt
-            };
-            
-        } catch (error) {
-            console.warn(`❌ Tentative ${attempt} échouée:`, error.message);
-            
-            if (attempt === maxRetries) {
-                throw new Error(`Échec après ${maxRetries} tentatives: ${error.message}`);
-            }
-            
-            const delay = retryDelay * Math.pow(2, attempt - 1);
-            await new Promise(resolve => setTimeout(resolve, delay));
-        }
-    }
-}
-
-// Version optimisée de performTranslation
-async function performTranslationOptimized(img) {
     try {
-        // Cache les settings pour éviter les appels répétés au storage
+        console.log('🌐 Nouvelle requête séquentielle...');
+        
+        const response = await fetch(`${apiUrl}/translate`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestData),
+            signal: currentController.signal
+        });
+        
+        const networkTime = performance.now() - startTime;
+        console.log(`⚡ Requête réseau: ${networkTime.toFixed(0)}ms`);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const result = await response.json();
+        const totalTime = performance.now() - startTime;
+        console.log(`📊 Temps total requête: ${totalTime.toFixed(0)}ms`);
+        
+        return {
+            success: true,
+            data: result,
+            networkTime: networkTime,
+            totalTime: totalTime
+        };
+        
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            throw new Error('Requête annulée');
+        }
+        throw error;
+    } finally {
+        if (currentController) {
+            currentController = null;
+        }
+    }
+}
+
+// Version séquentielle de la traduction
+async function performTranslationSequential(img) {
+    try {
         if (!cachedSettings) {
             cachedSettings = await new Promise(resolve => {
                 chrome.storage.local.get([
@@ -200,23 +243,18 @@ async function performTranslationOptimized(img) {
             translator: 'google'
         };
         
-        // Utiliser la requête optimisée
-        const result = await makeOptimizedRequest(apiUrl, requestData, {
-            timeout: 15000,
-            maxRetries: 2
-        });
-        
-        console.log(`🚀 Requête réussie en ${result.totalTime.toFixed(0)}ms (tentative ${result.attempt})`);
+        const result = await makeSequentialRequest(apiUrl, requestData);
+        console.log(`🚀 Requête réussie en ${result.totalTime.toFixed(0)}ms`);
         
         return result.data;
         
     } catch (error) {
-        console.error('Erreur requête optimisée:', error);
+        console.error('Erreur requête séquentielle:', error);
         throw error;
     }
 }
 
-// Fonction pour précharger les connexions (optionnel)
+// Fonction pour préparer les connexions (simplifiée)
 async function warmupConnections() {
     try {
         if (!cachedSettings) {
@@ -227,15 +265,10 @@ async function warmupConnections() {
         
         const apiUrl = cachedSettings['api-url'] || 'http://localhost:8000';
         
-        // Faire une requête de test pour établir la connexion
         console.log('🔥 Préchauffage de la connexion...');
         
         const response = await fetch(`${apiUrl}/health`, {
-            method: 'GET',
-            headers: {
-                'Connection': 'keep-alive'
-            },
-            keepalive: true
+            method: 'GET'
         });
         
         if (response.ok) {
@@ -247,57 +280,7 @@ async function warmupConnections() {
     }
 }
 
-// Monitorer les performances réseau
-class NetworkMonitor {
-    constructor() {
-        this.stats = {
-            requests: 0,
-            totalTime: 0,
-            errors: 0,
-            avgTime: 0,
-            minTime: Infinity,
-            maxTime: 0
-        };
-    }
-    
-    recordRequest(time, success = true) {
-        this.stats.requests++;
-        
-        if (success) {
-            this.stats.totalTime += time;
-            this.stats.avgTime = this.stats.totalTime / this.stats.requests;
-            this.stats.minTime = Math.min(this.stats.minTime, time);
-            this.stats.maxTime = Math.max(this.stats.maxTime, time);
-        } else {
-            this.stats.errors++;
-        }
-    }
-    
-    getStats() {
-        return {
-            ...this.stats,
-            successRate: ((this.stats.requests - this.stats.errors) / this.stats.requests * 100).toFixed(1),
-            connectionPool: connectionPool.getStats()
-        };
-    }
-    
-    reset() {
-        this.stats = {
-            requests: 0,
-            totalTime: 0,
-            errors: 0,
-            avgTime: 0,
-            minTime: Infinity,
-            maxTime: 0
-        };
-    }
-}
-
-const networkMonitor = new NetworkMonitor();
-
-
-
-// Préchauffer les connexions au démarrage
+// Précharger les connexions au démarrage
 setTimeout(warmupConnections, 1000);
 
 // Ajouter les styles CSS
@@ -309,14 +292,6 @@ function injectStyles() {
   styleSheet.textContent = CSS_STYLES;
   document.head.appendChild(styleSheet);
 }
-
-// Interface de debug
-window.mangaTranslatorNetwork = {
-    getStats: () => networkMonitor.getStats(),
-    resetStats: () => networkMonitor.reset(),
-    warmup: warmupConnections,
-    poolStats: () => connectionPool.getStats()
-};
 
 // Créer le bouton de contrôle
 function createControlButton() {
@@ -332,7 +307,7 @@ function createControlButton() {
   
   // Charger l'état et démarrer automatiquement
   chrome.storage.local.get([TRANSLATION_KEY, 'auto-translate'], (result) => {
-    autoTranslateEnabled = result['auto-translate'] !== false; // Par défaut: true
+    autoTranslateEnabled = result['auto-translate'] !== false;
     
     if (autoTranslateEnabled) {
       activateTranslation();
@@ -344,44 +319,45 @@ function createControlButton() {
 // Basculer entre les modes
 function toggleMode() {
   if (!isTranslationActive && !autoTranslateEnabled) {
-    // OFF -> AUTO
     autoTranslateEnabled = true;
     activateTranslation();
   } else if (isTranslationActive && autoTranslateEnabled) {
-    // AUTO -> MANUAL
     autoTranslateEnabled = false;
-    // Rester activé mais en mode manuel
   } else {
-    // MANUAL -> OFF
     autoTranslateEnabled = false;
     deactivateTranslation();
   }
   
   updateButtonDisplay();
   
-  // Sauvegarder les préférences
   chrome.storage.local.set({
     [TRANSLATION_KEY]: isTranslationActive,
     'auto-translate': autoTranslateEnabled
   });
 }
 
-// Mettre à jour l'affichage du bouton
+// Mettre à jour l'affichage du bouton avec stats
 function updateButtonDisplay() {
   const button = document.getElementById('manga-translator-btn');
   if (!button) return;
   
+  const stats = translationQueue.getStats();
+  const queueInfo = stats.queueLength > 0 ? ` (${stats.queueLength})` : '';
+  
   if (isTranslationActive && autoTranslateEnabled) {
-    button.textContent = 'Manga Translator: AUTO';
+    button.textContent = `Manga Translator: AUTO${queueInfo}`;
     button.className = 'manga-translator-button auto active';
   } else if (isTranslationActive && !autoTranslateEnabled) {
-    button.textContent = 'Manga Translator: MANUAL';
+    button.textContent = `Manga Translator: MANUAL${queueInfo}`;
     button.className = 'manga-translator-button active';
   } else {
     button.textContent = 'Manga Translator: OFF';
     button.className = 'manga-translator-button';
   }
 }
+
+// Mettre à jour le bouton périodiquement
+setInterval(updateButtonDisplay, 2000);
 
 // Activer/désactiver la traduction
 function toggleTranslation() {
@@ -396,18 +372,24 @@ function activateTranslation() {
   isTranslationActive = true;
   updateButtonDisplay();
   
-  // Sauvegarder l'état
   chrome.storage.local.set({[TRANSLATION_KEY]: true});
   
-  // Scanner toutes les images
-  scanForImagesOptimized();
+  // Scanner toutes les images avec file d'attente
+  scanForImagesWithQueue();
 }
 
 function deactivateTranslation() {
   isTranslationActive = false;
   updateButtonDisplay();
   
-  // Sauvegarder l'état
+  // Vider la file d'attente
+  translationQueue.clear();
+  
+  // Annuler la requête en cours
+  if (currentController) {
+    currentController.abort();
+  }
+  
   chrome.storage.local.set({[TRANSLATION_KEY]: false});
   
   // Supprimer tous les overlays
@@ -416,7 +398,6 @@ function deactivateTranslation() {
 
 // Détecter les changements de page
 function detectPageChange() {
-  // Observer les changements d'URL (pour les SPA comme React)
   const observer = new MutationObserver(() => {
     if (currentUrl !== window.location.href) {
       currentUrl = window.location.href;
@@ -430,12 +411,8 @@ function detectPageChange() {
     subtree: true
   });
   
-  // Écouter les événements de navigation
   window.addEventListener('popstate', onPageChange);
-  window.addEventListener('pushstate', onPageChange);
-  window.addEventListener('replacestate', onPageChange);
   
-  // Override pushState et replaceState pour les détecter
   const originalPushState = history.pushState;
   const originalReplaceState = history.replaceState;
   
@@ -452,10 +429,16 @@ function detectPageChange() {
 
 // Actions à effectuer lors d'un changement de page
 function onPageChange() {
-  console.log('📄 Page changed, checking translation settings...');
+  console.log('🔄 Page changed, resetting translation state...');
   
-  // Réinitialiser les images traitées
+  // Réinitialiser l'état
   processedImages = new WeakSet();
+  translationQueue.clear();
+  
+  // Annuler les requêtes en cours
+  if (currentController) {
+    currentController.abort();
+  }
   
   // Supprimer les anciens overlays
   document.querySelectorAll('.manga-translator-overlay').forEach(el => el.remove());
@@ -464,18 +447,17 @@ function onPageChange() {
   if (autoTranslateEnabled) {
     console.log('🚀 Auto-translating new page...');
     
-    // Attendre que les images se chargent
     setTimeout(() => {
       if (!isTranslationActive) {
         activateTranslation();
       } else {
-        scanForImagesOptimized();
+        scanForImagesWithQueue();
       }
-    }, 1500);
+    }, 2000); // Délai plus long pour laisser les images se charger
   }
 }
 
-// Observer les nouvelles images avec auto-traduction
+// Observer les nouvelles images
 function observeNewImages() {
   const observer = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
@@ -504,25 +486,34 @@ function handleNewImage(img) {
   
   processedImages.add(img);
   
-  // Si auto-traduction ou mode manuel activé
   if (autoTranslateEnabled || isTranslationActive) {
     if (!isTranslationActive) {
       activateTranslation();
     }
-    setTimeout(() => processImageOptimized(img), 500);
+    
+    // Ajouter à la file d'attente au lieu de traiter immédiatement
+    setTimeout(() => {
+      translationQueue.add(img);
+    }, 1000);
   }
 }
 
-// Vérifier si une image doit être traduite
+// Vérifier si une image doit être traduite (version simplifiée)
 function shouldTranslateImage(img) {
-  const minWidth = 100;
-  const minHeight = 100;
+  const minWidth = 150;
+  const minHeight = 80;
   
   if (img.naturalWidth < minWidth || img.naturalHeight < minHeight) {
     return false;
   }
   
-  const skipPatterns = ['logo', 'icon', 'avatar', 'button'];
+  // Éviter les images trop grandes (backgrounds)
+  const maxArea = 1500 * 1500;
+  if (img.naturalWidth * img.naturalHeight > maxArea) {
+    return false;
+  }
+  
+  const skipPatterns = ['logo', 'icon', 'avatar', 'button', 'emoji'];
   const src = img.src.toLowerCase();
   
   if (skipPatterns.some(pattern => src.includes(pattern))) {
@@ -539,9 +530,7 @@ function init() {
   observeNewImages();
   detectPageChange();
   
-  // Scanner les images après un délai pour laisser la page se charger
   setTimeout(() => {
-    // Si auto-traduction activée, démarrer automatiquement
     chrome.storage.local.get(['auto-translate'], (result) => {
       if (result['auto-translate'] !== false) {
         console.log('🚀 Auto-starting translation on page load...');
@@ -612,152 +601,50 @@ async function imageToBase64(img) {
   }
 }
 
-// Filtrage intelligent des images
-function shouldTranslateImageOptimized(img) {
-    // Critères plus stricts pour éviter les images inutiles
-    const minWidth = 120;
-    const minHeight = 60;
-    
-    if (img.naturalWidth < minWidth || img.naturalHeight < minHeight) {
-        return false;
-    }
-    
-    // Éviter les images trop grandes (probablement des backgrounds)
-    const maxArea = 2000 * 2000;
-    if (img.naturalWidth * img.naturalHeight > maxArea) {
-        console.log('🚫 Image trop grande ignorée:', img.naturalWidth, 'x', img.naturalHeight);
-        return false;
-    }
-    
-    // Patterns à éviter plus complets
-    const skipPatterns = [
-        'logo', 'icon', 'avatar', 'button', 'emoji', 'arrow',
-        'background', 'bg-', 'header', 'footer', 'nav', 'menu',
-        'thumb', 'preview', 'cover'
-    ];
-    
-    const src = img.src.toLowerCase();
-    const className = (img.className || '').toLowerCase();
-    const alt = (img.alt || '').toLowerCase();
-    const id = (img.id || '').toLowerCase();
-    
-    if (skipPatterns.some(pattern => 
-        src.includes(pattern) || className.includes(pattern) || 
-        alt.includes(pattern) || id.includes(pattern)
-    )) {
-        return false;
-    }
-    
-    // Éviter les ratios extrêmes (banners, barres)
-    const ratio = Math.max(img.naturalWidth, img.naturalHeight) / 
-                  Math.min(img.naturalWidth, img.naturalHeight);
-    if (ratio > 5) {
-        console.log('🚫 Ratio extrême ignoré:', ratio.toFixed(1));
-        return false;
-    }
-    
-    // Vérifier si l'image est visible (éviter les images cachées)
-    const rect = img.getBoundingClientRect();
-    if (rect.width < 50 || rect.height < 30) {
-        return false;
-    }
-    
-    return true;
-}
-
-// Traitement avec timeout et gestion d'erreurs optimisée
-async function processImageOptimized(img) {
-    const maxRetries = 1;
-    const timeout = 12000;
-    
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            console.log(`🔄 Traitement (${attempt}/${maxRetries}):`, img.src.substring(0, 40) + '...');
+// Traitement séquentiel d'une image
+async function processImageSequential(img) {
+    try {
+        console.log(`🔄 Traitement séquentiel:`, img.src.substring(0, 40) + '...');
+        
+        const overlay = createOverlay(img, `Processing...`, 'manga-translator-processing');
+        
+        const startTime = Date.now();
+        const result = await performTranslationSequential(img);
+        const processingTime = (Date.now() - startTime) / 1000;
+        
+        if (result.success) {
+            await displayTranslatedImage(img, result, overlay);
             
-            const overlay = createOverlay(img, `Processing...`, 'manga-translator-processing');
+            // Stats
+            chrome.runtime.sendMessage({
+                action: 'updateStats',
+                data: { processingTime: processingTime }
+            });
             
-            // Début du traitement avec timeout
-            const startTime = Date.now();
-            const translationPromise = performTranslationOptimized(img);
-            const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Timeout')), timeout)
-            );
-            
-            const result = await Promise.race([translationPromise, timeoutPromise]);
-            const processingTime = (Date.now() - startTime) / 1000;
-            
-            if (result.success) {
-                await displayTranslatedImage(img, result, overlay);
-                
-                // Stats
-                chrome.runtime.sendMessage({
-                    action: 'updateStats',
-                    data: { processingTime: processingTime }
-                });
-                
-                console.log(`✅ Succès en ${processingTime.toFixed(2)}s`);
-                return;
-            } else {
-                throw new Error(result.error);
-            }
-            
-        } catch (error) {
-            console.warn(`❌ Tentative ${attempt} échouée:`, error.message);
-            
-            if (attempt === maxRetries) {
-                const overlay = createOverlay(img, 
-                    `Failed: ${error.message.substring(0, 20)}...`, 
-                    'manga-translator-overlay'
-                );
-                setTimeout(() => overlay.remove(), 3000);
-            }
+            console.log(`✅ Succès en ${processingTime.toFixed(2)}s`);
+        } else {
+            throw new Error(result.error);
         }
+        
+    } catch (error) {
+        console.warn(`❌ Échec traitement:`, error.message);
+        
+        const overlay = createOverlay(img, 
+            `Failed: ${error.message.substring(0, 15)}...`, 
+            'manga-translator-overlay'
+        );
+        setTimeout(() => overlay.remove(), 4000);
+        throw error;
     }
 }
 
-// Fonction de traduction avec settings en cache
-let cachedSettings = null;
-
-/*
-async function performTranslation(img) {
-    // Settings en cache pour éviter les appels répétés au storage
-    if (!cachedSettings) {
-        cachedSettings = await new Promise(resolve => {
-            chrome.storage.local.get([
-                'api-url', 'source-lang', 'target-lang'
-            ], resolve);
-        });
-    }
-    
-    const base64Image = await imageToBase64(img);
-    const apiUrl = cachedSettings['api-url'] || 'http://localhost:8000';
-    
-    const response = await fetch(`${apiUrl}/translate`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            image_base64: base64Image,
-            source_lang: cachedSettings['source-lang'] || 'ja',
-            target_lang: cachedSettings['target-lang'] || 'en',
-            translator: 'google'
-        })
-    });
-    
-    if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-    }
-    
-    return await response.json();
-}
-*/
-// Affichage plus fluide des résultats
+// Affichage des résultats traduits
 async function displayTranslatedImage(originalImg, result, overlay) {
     return new Promise((resolve) => {
         const newImg = new Image();
         
         newImg.onload = () => {
-            // Transition plus rapide
-            originalImg.style.transition = 'opacity 0.2s ease';
+            originalImg.style.transition = 'opacity 0.3s ease';
             originalImg.style.opacity = '0.8';
             
             setTimeout(() => {
@@ -770,8 +657,8 @@ async function displayTranslatedImage(originalImg, result, overlay) {
                         overlay.remove();
                     }
                     resolve();
-                }, 1500);
-            }, 200);
+                }, 2000);
+            }, 300);
         };
         
         newImg.onerror = () => {
@@ -781,70 +668,56 @@ async function displayTranslatedImage(originalImg, result, overlay) {
                     overlay.remove();
                 }
                 resolve();
-            }, 2000);
+            }, 3000);
         };
         
         newImg.src = `data:image/png;base64,${result.translated_image_base64}`;
     });
 }
 
-// Scan optimisé avec limitation
-let scanInProgress = false;
-let lastScanTime = 0;
-
-function scanForImagesOptimized() {
-    if (!isTranslationActive || scanInProgress) return;
+// Scan avec file d'attente
+function scanForImagesWithQueue() {
+    if (!isTranslationActive) return;
     
-    // Throttling : max 1 scan toutes les 2 secondes
-    const now = Date.now();
-    if (now - lastScanTime < 2000) {
-        console.log('🚫 Scan throttled');
-        return;
-    }
-    lastScanTime = now;
-    
-    scanInProgress = true;
-    console.log('🔍 Scan optimisé...');
+    console.log('🔍 Scan avec file d\'attente...');
     
     const images = Array.from(document.querySelectorAll('img'))
         .filter(img => !processedImages.has(img))
-        .filter(shouldTranslateImageOptimized)
-        .slice(0, 3); // Limite stricte à 3 images simultanées
+        .filter(shouldTranslateImage)
+        .slice(0, 10); // Limite à 6 images maximum
     
-    console.log(`📸 ${images.length} images sélectionnées`);
+    console.log(`📸 ${images.length} images sélectionnées pour la file`);
     
     if (images.length === 0) {
-        scanInProgress = false;
         return;
     }
     
-    // Traiter les images avec délai
-    let processedCount = 0;
-    
-    const processNext = () => {
-        if (processedCount >= images.length) {
-            scanInProgress = false;
-            console.log('✅ Scan terminé');
-            return;
-        }
-        
-        const img = images[processedCount++];
+    // Ajouter toutes les images à la file d'attente
+    images.forEach((img, index) => {
         processedImages.add(img);
         
-        processImageOptimized(img)
-            .finally(() => {
-                // Délai entre images
-                setTimeout(processNext, 800);
-            });
-    };
-    
-    processNext();
+        // Overlay temporaire pour indiquer que l'image est en file
+        const overlay = createOverlay(img, `En file... (${index + 1})`, 'manga-translator-queued');
+        setTimeout(() => {
+            if (overlay.parentNode) {
+                overlay.remove();
+            }
+        }, 3000);
+        
+        // Ajouter à la file avec un petit délai
+        setTimeout(() => {
+            translationQueue.add(img);
+        }, index * 500); // 500ms entre chaque ajout
+    });
 }
 
-// Invalidation du cache des settings quand ils changent
+// Cache des settings
+let cachedSettings = null;
+
+// Invalidation du cache des settings
 chrome.storage.onChanged.addListener((changes) => {
     if (changes['api-url'] || changes['source-lang'] || changes['target-lang']) {
-        cachedSettings = null; // Forcer le rechargement
+        cachedSettings = null;
         console.log('⚙️ Settings cache invalidé');
     }
 });
