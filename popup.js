@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const apiStatusDot = document.getElementById('api-status-dot');
     const apiStatusText = document.getElementById('api-status-text');
     const statsDiv = document.getElementById('stats');
+    const translatorServiceSelect = document.getElementById('translator-service');
     
     // Inputs des paramètres
     const apiUrlInput = document.getElementById('api-url');
@@ -25,13 +26,15 @@ document.addEventListener('DOMContentLoaded', function() {
     // Vérifier l'état de l'API
     checkApiStatus();
     
+    setTimeout(checkAvailableTranslators, 1000);
+
     // Event listeners
     toggleBtn.addEventListener('click', toggleTranslation);
     scanBtn.addEventListener('click', scanCurrentPage);
     testApiBtn.addEventListener('click', testApi);
     
     // Sauvegarder les paramètres quand ils changent
-    [apiUrlInput, sourceLangSelect, targetLangSelect, minSizeInput].forEach(input => {
+    [apiUrlInput, translatorServiceSelect, sourceLangSelect, targetLangSelect, minSizeInput].forEach(input => {
         input.addEventListener('change', saveSettings);
     });
     
@@ -40,6 +43,7 @@ document.addEventListener('DOMContentLoaded', function() {
         chrome.storage.local.get([
             'manga-translator-active',
             'api-url',
+            'translator-service',
             'source-lang',
             'target-lang',
             'min-size',
@@ -53,6 +57,11 @@ document.addEventListener('DOMContentLoaded', function() {
             if (result['api-url']) {
                 apiUrlInput.value = result['api-url'];
             }
+
+            if (result['translator-service']) {
+            translatorServiceSelect.value = result['translator-service'];
+            }
+        
             if (result['source-lang']) {
                 sourceLangSelect.value = result['source-lang'];
             }
@@ -73,7 +82,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // Sauvegarder les paramètres
     function saveSettings() {
         const settings = {
+
             'api-url': apiUrlInput.value,
+            'translator-service': translatorServiceSelect.value,
             'source-lang': sourceLangSelect.value,
             'target-lang': targetLangSelect.value,
             'min-size': parseInt(minSizeInput.value)
@@ -134,6 +145,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Tester l'API
     async function testApi() {
         const apiUrl = apiUrlInput.value;
+        const translatorService = translatorServiceSelect.value;
         testApiBtn.textContent = 'Test en cours...';
         testApiBtn.disabled = true;
         
@@ -149,7 +161,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 body: JSON.stringify({
                     image_base64: testImage,
                     source_lang: sourceLangSelect.value,
-                    target_lang: targetLangSelect.value
+                    target_lang: targetLangSelect.value,
+                    translator: translatorService
                 })
             });
             
@@ -176,6 +189,42 @@ document.addEventListener('DOMContentLoaded', function() {
         testApiBtn.disabled = false;
     }
     
+    async function checkAvailableTranslators() {
+    const apiUrl = apiUrlInput.value;
+    
+    try {
+        const response = await fetch(`${apiUrl}/translator-stats`);
+        const result = await response.json();
+        
+        // Mettre à jour les options disponibles
+        const availableTranslators = result.available_translators || ['google'];
+        
+        // Désactiver les options non disponibles
+        Array.from(translatorServiceSelect.options).forEach(option => {
+            const isAvailable = availableTranslators.includes(option.value);
+            option.disabled = !isAvailable;
+            
+            if (!isAvailable && option.value === 'deepl') {
+                option.text = 'DeepL (non configuré)';
+            } else if (option.value === 'deepl') {
+                option.text = 'DeepL (meilleure qualité)';
+            }
+        });
+        
+        // Si le service sélectionné n'est pas disponible, basculer vers Google
+        if (!availableTranslators.includes(translatorServiceSelect.value)) {
+            translatorServiceSelect.value = 'google';
+            saveSettings();
+        }
+        
+        console.log('Services disponibles:', availableTranslators);
+        
+    } catch (error) {
+        console.log('Impossible de vérifier les services:', error.message);
+        // En cas d'erreur, laisser toutes les options disponibles
+    }
+}
+
     // Vérifier le statut de l'API
     async function checkApiStatus() {
         const apiUrl = apiUrlInput.value;
@@ -262,6 +311,27 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('last-translation').textContent = stats.lastTranslation || 'Jamais';
         }
     }
+
+    function showTranslatorStatus() {
+    const service = translatorServiceSelect.value;
+    const serviceNames = {
+        'google': 'Google Translate',
+        'deepl': 'DeepL'
+    };
+    
+    // Mettre à jour le statut avec le service
+    const statusText = document.getElementById('api-status-text');
+    if (apiOnline) {
+        statusText.textContent = `API: ${serviceNames[service] || service}`;
+    }
+}
+
+// Appeler showTranslatorStatus() quand le service change
+translatorServiceSelect.addEventListener('change', () => {
+    saveSettings();
+    showTranslatorStatus();
+
+});
     
     // Rafraîchir les statistiques depuis le storage
     function refreshStats() {
