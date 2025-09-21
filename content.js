@@ -228,7 +228,7 @@ async function performTranslationSequential(img) {
         if (!cachedSettings) {
             cachedSettings = await new Promise(resolve => {
                 chrome.storage.local.get([
-                    'api-url', 'source-lang', 'target-lang'
+                    'api-url', 'source-lang', 'target-lang', 'translator-service'
                 ], resolve);
             });
         }
@@ -240,7 +240,7 @@ async function performTranslationSequential(img) {
             image_base64: base64Image,
             source_lang: cachedSettings['source-lang'] || 'ja',
             target_lang: cachedSettings['target-lang'] || 'en',
-            translator: 'google'
+            translator: cachedSettings['translator-service'] || 'google'
         };
         
         const result = await makeSequentialRequest(apiUrl, requestData);
@@ -716,7 +716,7 @@ let cachedSettings = null;
 
 // Invalidation du cache des settings
 chrome.storage.onChanged.addListener((changes) => {
-    if (changes['api-url'] || changes['source-lang'] || changes['target-lang']) {
+    if (changes['api-url'] || changes['source-lang'] || changes['target-lang'] || changes['translator-service']) {
         cachedSettings = null;
         console.log('⚙️ Settings cache invalidé');
     }
