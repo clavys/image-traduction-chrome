@@ -4,11 +4,125 @@ from pydantic import BaseModel
 import base64
 import io
 import os
+from typing import Optional
 import sys
 from PIL import Image, ImageDraw, ImageFont
 import uvicorn
 import time
 import numpy as np
+
+# Configuration des traducteurs
+TRANSLATOR_CONFIG = {
+    'default': 'google',  # Traducteur par défaut
+    'deepl_api_key': "b3be89a4-31d3-4c97-a772-2481cf349dc8:fx",  
+    'fallback_to_google': True  # Utiliser Google si DeepL échoue
+}
+
+# Classe pour gérer plusieurs traducteurs
+class TranslatorManager:
+    def __init__(self):
+        self.translators = {}
+        self.current_translator = None
+        self.stats = {
+            'google_requests': 0,
+            'deepl_requests': 0,
+            'failures': 0
+        }
+    
+    def initialize_google(self):
+        """Initialise Google Translate"""
+        try:
+            from modules.translators.trans_google import GoogleTranslator
+            self.translators['google'] = GoogleTranslator()
+            print("✅ Google Translate initialisé")
+            return True
+        except Exception as e:
+            print(f"❌ Erreur Google Translate: {e}")
+            return False
+    
+    def initialize_deepl(self, api_key: str):
+        """Initialise DeepL avec clé API"""
+        if not api_key:
+            print("Pas de clé API DeepL fournie")
+            return False
+        
+        try:
+            from modules.translators.trans_deepl import DeeplTranslator
+            # Initialiser avec les langues par défaut requises
+            deepl_instance = DeeplTranslator(lang_source='日本語', lang_target='English')
+            deepl_instance.params['api_key'] = api_key  # Configurer la clé via params
+            self.translators['deepl'] = deepl_instance
+            print("DeepL initialisé")
+            return True
+        except Exception as e:
+            print(f"Erreur DeepL: {e}")
+            return False
+    
+    def get_translator(self, preferred: str = None):
+        """Récupère le traducteur préféré ou par défaut"""
+        if preferred and preferred in self.translators:
+            return self.translators[preferred], preferred
+        
+        # Ordre de préférence
+        for service in ['deepl', 'google']:
+            if service in self.translators:
+                return self.translators[service], service
+        
+        return None, None
+    
+    def translate(self, text: str, target_language: str, preferred_service: str = None):
+        """Traduit avec fallback automatique"""
+        translator, service = self.get_translator(preferred_service)
+        
+        if not translator:
+            raise Exception("Aucun traducteur disponible")
+        
+        try:
+            if service == 'deepl':
+                # Mapper les codes de langue vers les noms utilisés par BallonsTranslator
+                lang_mapping = {
+                    'ja': '日本語',
+                    'en': 'English', 
+                    'fr': 'Français',
+                    'es': 'Español'
+                }
+                
+                # Configurer les langues pour cette traduction
+                translator.lang_source = lang_mapping.get('ja', '日本語')  # Source par défaut japonais
+                translator.lang_target = lang_mapping.get(target_language, 'English')
+                
+                # Utiliser la méthode de traduction de BallonsTranslator
+                result = translator._translate([text])
+                translation = result[0] if result else text
+            else:
+                # Google Translate (méthode standard)
+                translation = translator.translate(text, target_language=target_language)
+            
+            self.stats[f'{service}_requests'] += 1
+            return translation
+        except Exception as e:
+            print(f"Erreur {service}: {e}")
+            self.stats['failures'] += 1
+            
+            # Fallback vers Google si DeepL échoue
+            if service == 'deepl' and 'google' in self.translators and TRANSLATOR_CONFIG['fallback_to_google']:
+                try:
+                    print("Fallback vers Google Translate...")
+                    result = self.translators['google'].translate(text, target_language=target_language)
+                    self.stats['google_requests'] += 1
+                    return result
+                except Exception as e2:
+                    print(f"Erreur fallback Google: {e2}")
+                    raise e2
+            
+            raise e
+    
+    def get_stats(self):
+        """Statistiques d'utilisation"""
+        return self.stats
+
+# Instance globale du gestionnaire
+translator_manager = TranslatorManager()
 
 class ModuleCache:
     """Cache pour éviter de réinitialiser les modules à chaque requête"""
@@ -92,6 +206,31 @@ except ImportError as e:
 # Configuration FastAPI avec lifespan
 from contextlib import asynccontextmanager
 
+# Fonction d'initialisation à ajouter dans le lifespan
+async def initialize_translators():
+    """Initialise les traducteurs disponibles"""
+    global translator_manager
+    
+    print("Initialisation des traducteurs...")
+    
+    # Google Translate (toujours disponible)
+    translator_manager.initialize_google()
+    
+    # DeepL (si clé API disponible)
+    deepl_key = os.getenv('DEEPL_API_KEY') or TRANSLATOR_CONFIG.get('deepl_api_key')
+    
+    # AJOUTEZ CES LIGNES DE DEBUG :
+    print(f"Debug - Clé DeepL trouvée: {'Oui' if deepl_key else 'Non'}")
+    if deepl_key:
+        print(f"Debug - Clé (masquée): {deepl_key[:8]}...")
+        print("Debug - Tentative d'initialisation DeepL...")
+        result = translator_manager.initialize_deepl(deepl_key)
+        print(f"Debug - Résultat initialisation: {result}")
+    else:
+        print("Clé DeepL non configurée, utilisation de Google uniquement")
+    
+    print(f"Traducteurs disponibles: {list(translator_manager.translators.keys())}")
+
 @asynccontextmanager
 async def lifespan(app):
     # Startup
@@ -108,7 +247,10 @@ async def lifespan(app):
             
             # Initialiser tous les modules
             try:
-                ballons_modules['translator'] = GoogleTranslator()
+                await initialize_translators()
+                # Garder ballons_modules['translator'] pour compatibilité
+                if 'google' in translator_manager.translators:
+                    ballons_modules['translator'] = translator_manager.translators['google']
                 print("✅ GoogleTranslator initialisé")
             except Exception as e:
                 print(f"❌ Erreur GoogleTranslator: {e}")
@@ -327,6 +469,28 @@ async def translate_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erreur: {str(e)}")
 
+# Endpoint pour configurer DeepL à chaud
+@app.post("/configure-deepl")
+async def configure_deepl(api_key: str):
+    """Configure DeepL avec une nouvelle clé API"""
+    global translator_manager
+    
+    if translator_manager.initialize_deepl(api_key):
+        TRANSLATOR_CONFIG['deepl_api_key'] = api_key
+        return {"success": True, "message": "DeepL configuré avec succès"}
+    else:
+        return {"success": False, "message": "Erreur configuration DeepL"}
+
+# Endpoint pour obtenir les stats
+@app.get("/translator-stats")
+async def get_translator_stats():
+    """Statistiques des traducteurs"""
+    return {
+        "available_translators": list(translator_manager.translators.keys()),
+        "default_translator": TRANSLATOR_CONFIG['default'],
+        "stats": translator_manager.get_stats()
+    }
+
 # Fonctions utilitaires pour le workflow BallonsTranslator width height et area ajustables
 def filter_small_text_blocks(blk_list, min_area=500):
     """Filtrer les blocs de texte trop petits pour économiser du temps"""
@@ -471,44 +635,51 @@ async def translate_image_ballons_style(image, request):
             except Exception as e:
                 print(f"Erreur OCR: {e}")
         
-        # 3. TRADUCTION PAR BATCH
-        translator = get_cached_module('translator')
-        if translator:
-            translation_start = time.time()
+        # 3. TRADUCTION AVEC GESTIONNAIRE MULTIPLE
+        translation_start = time.time()
+        
+        # Collecter tous les textes
+        texts_to_translate = []
+        text_indices = []
+        
+        for i, blk in enumerate(blk_list):
+            text = blk.get_text()
+            if text and text.strip():
+                texts_to_translate.append(text.strip())
+                text_indices.append(i)
+        
+        if texts_to_translate:
+            # Déterminer le service préféré depuis la requête
+            preferred_service = getattr(request, 'translator', 'google')
+            if preferred_service not in translator_manager.translators:
+                preferred_service = TRANSLATOR_CONFIG['default']
             
-            # Collecter tous les textes à traduire
-            texts_to_translate = []
-            text_indices = []  # Pour mapper les résultats aux blocs
+            print(f"Traduction de {len(texts_to_translate)} textes avec {preferred_service}...")
             
-            for i, blk in enumerate(blk_list):
-                text = blk.get_text()
-                if text and text.strip():
-                    texts_to_translate.append(text.strip())
-                    text_indices.append(i)
+            # Traduction par batch avec le gestionnaire
+            translated_texts = []
+            for text in texts_to_translate:
+                try:
+                    translation = translator_manager.translate(
+                        text, 
+                        request.target_lang,
+                        preferred_service
+                    )
+                    translated_texts.append(translation)
+                except Exception as e:
+                    print(f"Erreur traduction '{text}': {e}")
+                    translated_texts.append(f"[ERREUR] {text}")
             
-            if texts_to_translate:
-                print(f"Traduction batch de {len(texts_to_translate)} textes...")
-                
-                # Traduction par batch
-                translated_texts = batch_translate_texts(
-                    translator, 
-                    texts_to_translate, 
-                    request.target_lang,
-                    max_batch_size=8  # Ajustable selon les performances
-                )
-                
-                # Assigner les traductions aux blocs
-                for idx, translated_text in enumerate(translated_texts):
-                    if idx < len(text_indices):
-                        blk_idx = text_indices[idx]
-                        original_text = texts_to_translate[idx]
-                        blk_list[blk_idx].translation = translated_text
-                        print(f"'{original_text}' -> '{translated_text}'")
-                
-                translation_time = time.time() - translation_start
-                print(f"{len(translated_texts)} textes traduits en {translation_time:.2f}s")
-            else:
-                print("Aucun texte à traduire")
+            # Assigner les traductions
+            for idx, translated_text in enumerate(translated_texts):
+                if idx < len(text_indices):
+                    blk_idx = text_indices[idx]
+                    original_text = texts_to_translate[idx]
+                    blk_list[blk_idx].translation = translated_text
+                    print(f"'{original_text}' -> '{translated_text}'")
+            
+            translation_time = time.time() - translation_start
+            print(f"{len(translated_texts)} textes traduits en {translation_time:.2f}s")
         
         # 4. Rendu final
         inpainter = get_cached_module('inpainter')
