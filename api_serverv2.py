@@ -8,7 +8,392 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 import uvicorn
 import time
+import requests
+import json
+from typing import List, Optional
 import numpy as np
+
+# Configuration des traducteurs
+TRANSLATOR_CONFIG = {
+    'default': 'google',  # Traducteur par défaut
+    'deepl_api_key': "b3be89a4-31d3-4c97-a772-2481cf349dc8:fx",
+    "base_url": "http://localhost:1234",
+    "model_name": "sugoi-14b-ultra",
+    'fallback_to_google': True  # Utiliser Google si DeepL échoue
+}
+
+class LMStudioTranslator:
+    """Intégration avec LM Studio pour Sugoi Q8 local"""
+    
+    def __init__(self, base_url: str = "http://localhost:1234", model_name: str = "sugoi-q8"):
+        self.base_url = base_url.rstrip('/')
+        self.model_name = model_name
+        self.api_endpoint = f"{self.base_url}/v1/chat/completions"
+        
+        # Prompts optimisés pour différents types de contenu manga
+        self.prompts = {
+            'manga_dialogue': """You are a professional manga translator. Translate the following Japanese text to {target_lang}.
+
+Rules:
+- Keep the tone and style appropriate for manga dialogue
+- Preserve emotional nuances and character personality
+- Use natural, colloquial language when appropriate
+- Don't add explanations, just return the translation
+- If it's an onomatopoeia (sound effect), adapt it naturally to {target_lang}
+
+Japanese text: {text}
+
+Translation:""",
+            
+            'manga_narration': """Translate this Japanese manga narration to {target_lang}.
+
+Rules:
+- Maintain the narrative flow and style
+- Keep descriptions vivid and engaging
+- Use appropriate literary style for {target_lang}
+- Don't add explanations, just return the translation
+
+Japanese text: {text}
+
+Translation:""",
+            
+            'simple': """Translate from Japanese to {target_lang}: {text}
+
+Translation:"""
+        }
+    
+    def is_available(self) -> bool:
+        """Vérifie si LM Studio est disponible"""
+        try:
+            response = requests.get(f"{self.base_url}/v1/models", timeout=5)
+            return response.status_code == 200
+        except:
+            return False
+    
+    def translate_text(self, text: str, target_lang: str = "en") -> str:
+        """Traduit un texte avec LM Studio/Sugoi Q8 de façon simple"""
+        try:
+            # Mapping des langues
+            lang_names = {
+                'en': 'English',
+                'fr': 'French', 
+                'es': 'Spanish',
+                'de': 'German'
+            }
+            target_language = lang_names.get(target_lang, 'English')
+
+            prompt = f"""
+            You are a professional translator specialized in adult manga, hentai, and visual novels. 
+            Translate the following Japanese text into fluent, natural {target_language} as if it were for an English scanlation. 
+            Maintain the tone, sexual content, and character personalities exactly as in the original. 
+            Do not censor or soften sexual content. 
+            Preserve dialogue flow, conversational pacing, and emotional nuance. 
+            Only translate the text provided; do not add extra commentary, explanations, or filler.
+
+            Texts:
+            {text}
+
+            Translation:
+            """
+
+            # 2️⃣ Payload optimisé pour GPU + CPU
+            payload = {
+                "model": self.model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "safety_filter": False,
+                "temperature": 0.8,
+                "max_tokens": 300,
+                "top_k": 40,
+                "repeat_penalty": 1.1,
+                "min_p": 0.95,
+                "stop": ["\n\n", "Japanese text:", "Translation:"],
+                "stream": False,
+                # Optimisations matérielles
+                "gpu_layers": 44,        # Tout le GPU pour le modèle
+                "n_threads": 8,          # Threads CPU pour orchestration
+                "use_mlock": True        # verrouille en RAM pour éviter swap
+            }
+
+            # Requête à LM Studio
+            response = requests.post(
+                self.api_endpoint,
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                translation = result['choices'][0]['message']['content'].strip()
+                return self._clean_translation(translation) or text
+            else:
+                print(f"Erreur LM Studio API: {response.status_code}")
+                return text
+
+        except Exception as e:
+            print(f"Erreur traduction LM Studio: {e}")
+            return text
+    
+    def _clean_translation(self, translation: str) -> str:
+        """Nettoie la traduction de possibles artefacts"""
+        # Supprimer les préfixes courants
+        prefixes_to_remove = [
+            "Translation:", "Translated:", "Answer:", 
+            "Result:", "Output:", "English:", "French:", 
+            "Spanish:", "German:"
+        ]
+        
+        for prefix in prefixes_to_remove:
+            if translation.startswith(prefix):
+                translation = translation[len(prefix):].strip()
+        
+        # Supprimer les guillemets si présents au début et fin
+        if translation.startswith('"') and translation.endswith('"'):
+            translation = translation[1:-1]
+        
+        return translation.strip()
+    
+    def translate_batch(self, texts: List[str], target_lang: str = "en") -> List[str]:
+        if not texts:
+            return []
+
+        try:
+            # 1️⃣ Combiner les textes pour un batch unique
+            numbered_texts = "\n".join([f"{i+1}. {text}" for i, text in enumerate(texts)])
+            #prompt = f"Translate to {target_lang}:\n{numbered_texts}"
+
+            prompt = f"""
+            You are a professional translator specialized in adult manga, hentai, and visual novels. 
+            Translate the following Japanese text into fluent, natural {target_lang} as if it were for an English scanlation. 
+            Maintain the tone, sexual content, and character personalities exactly as in the original. 
+            Do not censor or soften sexual content. 
+            Preserve dialogue flow, conversational pacing, and emotional nuance. 
+            Only translate the text provided; do not add extra commentary, explanations, or filler.
+
+            Texts:
+            {numbered_texts}
+
+            Translation:
+            """
+
+            # 2️⃣ Payload optimisé pour GPU + CPU
+            payload = {
+                "model": self.model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "safety_filter": False,
+                "temperature": 0.8,
+                "max_tokens": 300,
+                "top_k": 40,
+                "repeat_penalty": 1.1,
+                "min_p": 0.95,
+                "stop": ["\n\n", "Japanese text:", "Translation:"],
+                "stream": False,
+                # Optimisations matérielles
+                "gpu_layers": 44,        # Tout le GPU pour le modèle
+                "n_threads": 8,          # Threads CPU pour orchestration
+                "use_mlock": True        # verrouille en RAM pour éviter swap
+            }
+
+            start_time = time.time()
+            response = requests.post(self.api_endpoint, json=payload, timeout=15)
+            request_time = time.time() - start_time
+            print(f"⚡ Requête LM Studio batch: {request_time:.2f}s")
+
+            if response.status_code == 200:
+                result = response.json()['choices'][0]['message']['content']
+
+                # Parser par lignes numérotées
+                lines = [line.strip() for line in result.split('\n') if line.strip()]
+                translations = []
+                for i in range(len(texts)):
+                    target = f"{i+1}."
+                    found = False
+                    for line in lines:
+                        if line.startswith(target):
+                            translations.append(line[len(target):].strip())
+                            found = True
+                            break
+                    if not found:
+                        translations.append(texts[i])  # fallback
+
+                print(f"✅ Batch traduit: {len(translations)} textes en {time.time() - start_time:.2f}s")
+                return translations
+
+            else:
+                print(f"Erreur LM Studio API: {response.status_code}")
+                return texts
+
+        except Exception as e:
+            print(f"Erreur batch optimisé: {e}")
+            return texts
+    
+    def _detect_context_type(self, text: str) -> str:
+        """Détecte le type de contenu pour choisir le bon prompt"""
+        # Indicateurs de dialogue
+        dialogue_indicators = ['！', '？', '…', 'ー', 'っ', 'よ', 'ね', 'だ', 'である']
+        
+        # Indicateurs de narration
+        narration_indicators = ['。', 'した', 'する', 'である', 'だった', 'ている']
+        
+        # Onomatopées (souvent en katakana répétés)
+        if any(char in 'アカサタナハマヤラワ' for char in text) and len(set(text)) < len(text) * 0.6:
+            return 'manga_dialogue'  # Les onomatopées sont traitées comme dialogue
+        
+        # Plus d'indicateurs de dialogue
+        dialogue_score = sum(1 for indicator in dialogue_indicators if indicator in text)
+        narration_score = sum(1 for indicator in narration_indicators if indicator in text)
+        
+        return 'manga_narration' if narration_score > dialogue_score else 'manga_dialogue'
+    
+    def get_model_info(self):
+        """Récupère les infos du modèle chargé"""
+        try:
+            response = requests.get(f"{self.base_url}/v1/models", timeout=5)
+            if response.status_code == 200:
+                models = response.json()
+                return models.get('data', [])
+        except:
+            pass
+        return []
+
+# Classe pour gérer plusieurs traducteurs
+class TranslatorManager:
+    def __init__(self):
+        self.translators = {}
+        self.current_translator = None
+        self.stats = {
+            'google_requests': 0,
+            'deepl_requests': 0,
+            'lmstudio_requests': 0,
+            'failures': 0
+        }
+    
+    def initialize_google(self):
+        """Initialise Google Translate"""
+        try:
+            from modules.translators.trans_google import GoogleTranslator
+            self.translators['google'] = GoogleTranslator()
+            print("✅ Google Translate initialisé")
+            return True
+        except Exception as e:
+            print(f"❌ Erreur Google Translate: {e}")
+            return False
+    
+    def initialize_deepl(self, api_key: str):
+        """Initialise DeepL avec clé API"""
+        if not api_key:
+            print("Pas de clé API DeepL fournie")
+            return False
+        
+        try:
+            from modules.translators.trans_deepl import DeeplTranslator
+            # Initialiser avec les langues par défaut requises
+            deepl_instance = DeeplTranslator(lang_source='日本語', lang_target='English')
+            deepl_instance.params['api_key'] = api_key  # Configurer la clé via params
+            self.translators['deepl'] = deepl_instance
+            print("DeepL initialisé")
+            return True
+        except Exception as e:
+            print(f"Erreur DeepL: {e}")
+            return False
+    
+    def get_translator(self, preferred: str = None):
+        """Récupère le traducteur préféré ou par défaut"""
+        if preferred and preferred in self.translators:
+            return self.translators[preferred], preferred
+        
+        # Ordre de préférence
+        for service in ['deepl', 'google']:
+            if service in self.translators:
+                return self.translators[service], service
+        
+        return None, None
+    
+
+    def initialize_lm_studio(self, base_url: str = "http://localhost:1234", model_name: str = "sugoi-q8"):
+        """Initialise LM Studio avec Sugoi Q8"""
+        try:
+            self.lm_studio = LMStudioTranslator(base_url, model_name)
+            
+            # Tester la disponibilité
+            if self.lm_studio.is_available():
+                # Test de traduction
+                test_text = "こんにちは"
+                test_result = self.lm_studio.translate_text(test_text, "en")
+                
+                if test_result and test_result != test_text:
+                    self.translators['lmstudio'] = self.lm_studio
+                    print(f"LM Studio + Sugoi Q8 initialisé")
+                    print(f"Test: '{test_text}' -> '{test_result}'")
+                    return True
+                else:
+                    print("Test de traduction LM Studio échoué")
+                    return False
+            else:
+                print("LM Studio non disponible")
+                return False
+                
+        except Exception as e:
+            print(f"Erreur LM Studio: {e}")
+            return False    
+
+
+    def translate(self, text: str, target_language: str, preferred_service: str = None):
+        """Traduit avec support LM Studio/Sugoi Q8"""
+        translator, service = self.get_translator(preferred_service)
+        
+        if not translator:
+            raise Exception("Aucun traducteur disponible")
+        
+        try:
+            if service == 'lmstudio':
+                # Traduction avec LM Studio/Sugoi Q8
+                translation = self.lm_studio.translate_text(text, target_language)
+                
+            elif service == 'deepl':
+                # DeepL BallonsTranslator  
+                lang_mapping = {
+                    'ja': '日本語',
+                    'en': 'English', 
+                    'fr': 'Français',
+                    'es': 'Español'
+                }
+                translator.lang_source = lang_mapping.get('ja', '日本語')
+                translator.lang_target = lang_mapping.get(target_language, 'English')
+                result = translator._translate([text])
+                translation = result[0] if result else text
+                
+            else:
+                # Google Translate
+                translation = translator.translate(text, target_language=target_language)
+            
+            self.stats[f'{service}_requests'] += 1
+            return translation
+            
+        except Exception as e:
+            print(f"Erreur {service}: {e}")
+            self.stats['failures'] += 1
+            
+            # Fallback intelligent pour manga
+            fallback_order = ['lmstudio', 'deepl', 'google']
+            current_index = fallback_order.index(service) if service in fallback_order else -1
+            
+            for next_service in fallback_order[current_index + 1:]:
+                if next_service in self.translators:
+                    try:
+                        print(f"Fallback {service} -> {next_service}...")
+                        return self.translate(text, target_language, next_service)
+                    except:
+                        continue
+            
+            raise e
+    
+    def get_stats(self):
+        """Statistiques d'utilisation"""
+        return self.stats
+
+# Instance globale du gestionnaire
+translator_manager = TranslatorManager()
 
 class ModuleCache:
     """Cache pour éviter de réinitialiser les modules à chaque requête"""
@@ -92,6 +477,28 @@ except ImportError as e:
 # Configuration FastAPI avec lifespan
 from contextlib import asynccontextmanager
 
+# Fonction d'initialisation à ajouter dans le lifespan
+async def initialize_translators():
+    """Initialise les traducteurs disponibles"""
+    global translator_manager
+    
+    print("Initialisation des traducteurs...")
+    
+    # LM Studio + Sugoi Q8 (priorité pour manga)
+    lm_studio_url = TRANSLATOR_CONFIG.get('lm_studio_url', 'http://localhost:1234')
+    lm_studio_model = TRANSLATOR_CONFIG.get('lm_studio_model', 'sugoi-q8')
+    translator_manager.initialize_lm_studio(lm_studio_url, lm_studio_model)
+    
+    # Google Translate
+    translator_manager.initialize_google()
+    
+    # DeepL
+    deepl_key = os.getenv('DEEPL_API_KEY') or TRANSLATOR_CONFIG.get('deepl_api_key')
+    if deepl_key:
+        translator_manager.initialize_deepl(deepl_key)
+    
+    print(f"Traducteurs disponibles: {list(translator_manager.translators.keys())}")
+
 @asynccontextmanager
 async def lifespan(app):
     # Startup
@@ -108,7 +515,10 @@ async def lifespan(app):
             
             # Initialiser tous les modules
             try:
-                ballons_modules['translator'] = GoogleTranslator()
+                await initialize_translators()
+                # Garder ballons_modules['translator'] pour compatibilité
+                if 'google' in translator_manager.translators:
+                    ballons_modules['translator'] = translator_manager.translators['google']
                 print("✅ GoogleTranslator initialisé")
             except Exception as e:
                 print(f"❌ Erreur GoogleTranslator: {e}")
@@ -327,6 +737,65 @@ async def translate_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Erreur: {str(e)}")
 
+# Endpoint pour configurer DeepL à chaud
+@app.post("/configure-deepl")
+async def configure_deepl(api_key: str):
+    """Configure DeepL avec une nouvelle clé API"""
+    global translator_manager
+    
+    if translator_manager.initialize_deepl(api_key):
+        TRANSLATOR_CONFIG['deepl_api_key'] = api_key
+        return {"success": True, "message": "DeepL configuré avec succès"}
+    else:
+        return {"success": False, "message": "Erreur configuration DeepL"}
+
+# Endpoint pour obtenir les stats
+@app.get("/translator-stats")
+async def get_translator_stats():
+    """Statistiques des traducteurs"""
+    return {
+        "available_translators": list(translator_manager.translators.keys()),
+        "default_translator": TRANSLATOR_CONFIG['default'],
+        "stats": translator_manager.get_stats()
+    }
+
+@app.get("/lmstudio-status")
+async def lmstudio_status():
+    """Statut de LM Studio"""
+    if not translator_manager.lm_studio:
+        return {"available": False, "message": "LM Studio non initialisé"}
+    
+    available = translator_manager.lm_studio.is_available()
+    models = translator_manager.lm_studio.get_model_info()
+    
+    return {
+        "available": available,
+        "base_url": translator_manager.lm_studio.base_url,
+        "model_name": translator_manager.lm_studio.model_name,
+        "models": models
+    }
+
+@app.post("/lmstudio-test")
+async def lmstudio_test(text: str = "こんにちは", target_lang: str = "en"):
+    """Test de traduction LM Studio"""
+    if not translator_manager.lm_studio:
+        return {"success": False, "message": "LM Studio non disponible"}
+    
+    try:
+        start_time = time.time()
+        translation = translator_manager.lm_studio.translate_text(text, target_lang)
+        processing_time = time.time() - start_time
+        
+        return {
+            "success": True,
+            "original": text,
+            "translation": translation,
+            "processing_time": processing_time,
+            "target_lang": target_lang
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 # Fonctions utilitaires pour le workflow BallonsTranslator width height et area ajustables
 def filter_small_text_blocks(blk_list, min_area=500):
     """Filtrer les blocs de texte trop petits pour économiser du temps"""
@@ -357,86 +826,214 @@ def filter_small_text_blocks(blk_list, min_area=500):
     return filtered_blocks
 
 
-# Fonction principale utilisant le workflow BallonsTranslator natif
-async def translate_image_ballons_style(image, request):
-    """Utiliser le workflow exact de BallonsTranslator comme dans scripts/run_module.py"""
+# Fonction pour la traduction par batch
+def batch_translate_texts(translator, texts, target_lang, max_batch_size=5):
+    """Traduire plusieurs textes en une seule requête"""
+    if not texts or len(texts) == 0:
+        return []
+    
+    if len(texts) == 1:
+        # Un seul texte, traduction normale
+        try:
+            return [translator.translate(texts[0], target_language=target_lang)]
+        except Exception as e:
+            print(f"Erreur traduction unique: {e}")
+            return [f"[ERREUR] {texts[0]}"]
+    
+    # Plusieurs textes, essayer le batch
+    if len(texts) <= max_batch_size:
+        try:
+            # Combiner les textes avec des séparateurs uniques
+            separator = "|||SEPARATOR|||"
+            combined_text = separator.join(f"[{i}] {text}" for i, text in enumerate(texts))
+            
+            # Vérifier que ce n'est pas trop long
+            if len(combined_text) > 4000:  # Limite de sécurité
+                print("Texte combiné trop long, traduction individuelle")
+                return translate_individually(translator, texts, target_lang)
+            
+            print(f"Traduction batch de {len(texts)} textes...")
+            batch_result = translator.translate(combined_text, target_language=target_lang)
+            
+            # Parser le résultat
+            parsed_results = parse_batch_result(batch_result, separator, len(texts))
+            
+            if len(parsed_results) == len(texts):
+                print(f"Batch réussi: {len(parsed_results)} traductions")
+                return parsed_results
+            else:
+                print("Parsing batch échoué, fallback individuel")
+                return translate_individually(translator, texts, target_lang)
+                
+        except Exception as e:
+            print(f"Erreur batch: {e}, fallback individuel")
+            return translate_individually(translator, texts, target_lang)
+    else:
+        # Trop de textes, traduction individuelle
+        return translate_individually(translator, texts, target_lang)
+
+def parse_batch_result(batch_result, separator, expected_count):
+    """Parser le résultat de traduction batch"""
     try:
-        print("🔄 Workflow BallonsTranslator natif")
+        # Séparer par le séparateur
+        parts = batch_result.split(separator)
         
-        # Conversion PIL -> numpy
+        results = []
+        for part in parts:
+            # Enlever le préfixe [0], [1], etc.
+            import re
+            cleaned = re.sub(r'^\[\d+\]\s*', '', part.strip())
+            if cleaned:
+                results.append(cleaned)
+        
+        return results[:expected_count]  # Limiter au nombre attendu
+        
+    except Exception as e:
+        print(f"Erreur parsing batch: {e}")
+        return []
+
+def translate_individually(translator, texts, target_lang):
+    """Fallback: traduction individuelle"""
+    results = []
+    for text in texts:
+        try:
+            translation = translator.translate(text, target_language=target_lang)
+            results.append(translation)
+        except Exception as e:
+            print(f"Erreur traduction '{text}': {e}")
+            results.append(f"[ERREUR] {text}")
+    return results
+
+# Modifier la fonction translate_image_ballons_style
+async def translate_image_ballons_style(image, request):
+    """Workflow BallonsTranslator avec traduction par batch optimisée"""
+    try:
+        print("Workflow BallonsTranslator avec batch translation")
+        
         img_array = np.array(image)
         im_h, im_w = img_array.shape[:2]
         
-        # 1. Détection des zones de texte (comme dans scripts/run_module.py)
+        # 1. Détection
         detector = get_cached_module('detector')
         if not detector:
             return add_debug_info(image, "Détecteur non disponible")
-        blk_list = []  # Liste vide initiale comme dans le code source
         
-        print("🔍 Détection des zones de texte...")
+        blk_list = []
+        print("Détection des zones de texte...")
+        detection_start = time.time()
         mask, blk_list = detector.detect(img_array, blk_list)
-        print(f"📍 {len(blk_list)} TextBlocks détectés")
+        detection_time = time.time() - detection_start
+        print(f"{len(blk_list)} TextBlocks détectés en {detection_time:.2f}s")
         
         if not blk_list:
             return add_debug_info(image, "Aucune zone de texte détectée")
         
-        #blk_list = filter_small_text_blocks(blk_list, min_area=400)
-        if not blk_list:
-            return add_debug_info(image, "Aucune zone de texte après filtrage")
-        
-        # 2. OCR avec la vraie méthode interne (comme dans le code source)
-        if 'ocr' in ballons_modules:
-            ocr = get_cached_module('ocr')
-            print("📖 OCR avec méthode interne BallonsTranslator...")
-            
+        # 2. OCR
+        ocr = get_cached_module('ocr')
+        if ocr:
+            ocr_start = time.time()
             try:
                 if hasattr(ocr, '_ocr_blk_list'):
                     ocr._ocr_blk_list(img_array, blk_list)
-   
+                ocr_time = time.time() - ocr_start
+                print(f"OCR terminé en {ocr_time:.2f}s")
             except Exception as e:
-                print(f"❌ Erreur OCR interne: {e}")
+                print(f"Erreur OCR: {e}")
         
-        # 3. Traduction (comme dans le workflow BallonsTranslator)
-        translator = get_cached_module('translator')
-        if 'translator' :
+        # 3. TRADUCTION AVEC GESTIONNAIRE MULTIPLE
+        translation_start = time.time()
+        
+        # Collecter tous les textes
+        texts_to_translate = []
+        text_indices = []
+        
+        for i, blk in enumerate(blk_list):
+            text = blk.get_text()
+            if text and text.strip():
+                texts_to_translate.append(text.strip())
+                text_indices.append(i)
+        
+        if texts_to_translate:
+            # DEFINIR preferred_service EN PREMIER
+            preferred_service = getattr(request, 'translator', 'google')
+            if preferred_service not in translator_manager.translators:
+                preferred_service = TRANSLATOR_CONFIG['default']
             
-            print("Traduction des TextBlocks...")
+            print(f"Traduction batch de {len(texts_to_translate)} textes avec {preferred_service}...")
             
-            translated_count = 0
-            for blk in blk_list:
-                text = blk.get_text()
-                if text and text.strip():
+            if preferred_service == 'lmstudio':
+                # Batch optimisé pour LM Studio
+                translated_texts = translator_manager.lm_studio.translate_batch(
+                    texts_to_translate, request.target_lang
+                )
+            else:
+                # Traduction individuelle pour les autres services
+                translated_texts = []
+                for text in texts_to_translate:
                     try:
-                        # Utiliser l'API du traducteur BallonsTranslator
-                        translation = translator.translate(text, target_language=request.target_lang)
-                        blk.translation = translation
-                        translated_count += 1
-                        print(f"🔄 '{text}' -> '{translation}'")
+                        translation = translator_manager.translate(
+                            text, 
+                            request.target_lang,
+                            preferred_service
+                        )
+                        translated_texts.append(translation)
                     except Exception as e:
-                        print(f"⚠️ Erreur traduction: {e}")
-                        blk.translation = f"[ERREUR] {text}"
+                        print(f"Erreur traduction '{text}': {e}")
+                        translated_texts.append(f"[ERREUR] {text}")
             
-            print(f"📝 {translated_count} blocs traduits")
-        
-        # 4. Inpainting et rendu final (comme dans BallonsTranslator)
+            # ASSIGNER LES TRADUCTIONS (POUR TOUS LES CAS)
+            for idx, translated_text in enumerate(translated_texts):
+                if idx < len(text_indices):
+                    blk_idx = text_indices[idx]
+                    original_text = texts_to_translate[idx]
+                    blk_list[blk_idx].translation = translated_text
+                    print(f"'{original_text}' -> '{translated_text}'")
+            
+            translation_time = time.time() - translation_start
+            print(f"{len(translated_texts)} textes traduits en {translation_time:.2f}s")
+            
+        # 4. Rendu final
         inpainter = get_cached_module('inpainter')
-        if inpainter and any(blk.translation for blk in blk_list):
-            print("🖌️ Inpainting et rendu final...")
-            return render_ballons_result(image, img_array, blk_list, mask)
+        if inpainter and any(hasattr(blk, 'translation') and blk.translation for blk in blk_list):
+            print("Rendu final...")
+            render_start = time.time()
+            result = render_ballons_result(image, img_array, blk_list, mask)
+            render_time = time.time() - render_start
+            print(f"Rendu terminé en {render_time:.2f}s")
+            return result
         else:
             return render_ballons_overlay(image, blk_list)
         
     except Exception as e:
-        print(f"❌ Erreur workflow BallonsTranslator: {e}")
+        print(f"Erreur workflow: {e}")
         import traceback
         traceback.print_exc()
-        return add_debug_info(image, f"Erreur workflow: {str(e)}")
+        return add_debug_info(image, f"Erreur: {str(e)}")
 
-def get_font(size=18):
-    """Police pour le rendu avec meilleure lisibilité"""
+def get_font(size=18, bubble_width=None, bubble_height=None, text_length=None):
+    """Police avec taille adaptative simple"""
+    
+    if bubble_width and bubble_height:
+        # Taille basée sur la plus petite dimension de la bulle
+        min_dimension = min(bubble_width, bubble_height)
+        
+        if min_dimension > 150:
+            font_size = 20
+        elif min_dimension > 100:
+            font_size = 16
+        elif min_dimension > 60:
+            font_size = 14
+        else:
+            font_size = 12
+        
+        # Réduire légèrement si le texte est très long
+        if text_length and text_length > 30:
+            font_size = max(10, font_size - 2)
+    else:
+        font_size = size
+    
     try:
-        # Essayer DejaVuSans-Bold, souvent présente avec Pillow
-        return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
+        return ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
     except:
         try:
             return ImageFont.load_default()
@@ -464,20 +1061,26 @@ def render_ballons_result(original_image, img_array, blk_list, mask):
         try:
             inpainted_array = inpainter.inpaint(img_array, inpaint_mask)
             result_image = Image.fromarray(inpainted_array.astype(np.uint8))
+            del inpainted_array, inpaint_mask
+            import gc
+            gc.collect()
         except Exception as e:
             print(f"⚠️ Inpainting échoué: {e}")
             result_image = original_image.copy()
 
         draw = ImageDraw.Draw(result_image)
-        font = get_font(18)
-        ascent, descent = font.getmetrics()
-        line_spacing = ascent + descent + 2
 
         for blk in blk_list:
             if blk.translation and hasattr(blk, 'xyxy'):
                 x1, y1, x2, y2 = map(int, blk.xyxy)
                 max_width = x2 - x1
                 max_height = y2 - y1
+                
+                # Font adaptative pour chaque bulle
+                font = get_font(18, max_width, max_height, len(blk.translation))
+                ascent, descent = font.getmetrics()
+                line_spacing = ascent + descent + 2
+                
                 lines = wrap_text(blk.translation, font, max_width, draw)
                 total_height = len(lines) * line_spacing
                 y_text = y1 + (max_height - total_height) // 2
@@ -487,9 +1090,7 @@ def render_ballons_result(original_image, img_array, blk_list, mask):
                     x_text = x1 + (max_width - w) // 2
                     draw_text_with_outline(draw, (x_text, y_text), line, font)
                     y_text += line_spacing
-
-        draw_text_with_outline(draw, (10, original_image.height - 25),
-                               "🎯 BALLONS TRANSLATOR - WORKFLOW NATIF", font, fill="green", outline="black", stroke_width=2)
+                    
         return result_image
 
     except Exception as e:
